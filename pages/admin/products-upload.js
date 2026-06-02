@@ -68,9 +68,10 @@ export default function ProductsUpload() {
       }
     }
 
-    const { error } = await supabase
-      .from('products')
-      .upsert(rows, { onConflict: 'sku' })
+    // 전체 교체 모드는 삭제 후 insert, 추가/업데이트 모드는 upsert
+    const { error } = replaceAll
+      ? await supabase.from('products').insert(rows)
+      : await supabase.from('products').upsert(rows, { onConflict: 'sku' })
 
     setUploading(false)
     if (error) {
