@@ -11,12 +11,14 @@ export default function AmbassadorsUpload() {
   const [uploading, setUploading] = useState(false)
   const [result, setResult] = useState(null)
   const [fileName, setFileName] = useState('')
+  const [showConfirm, setShowConfirm] = useState(false)
   const fileRef = useRef()
 
   function handleFile(file) {
     if (!file) return
     setFileName(file.name)
     setResult(null)
+    setShowConfirm(false)
     const reader = new FileReader()
     reader.onload = e => {
       const wb = XLSX.read(e.target.result, { type: 'binary' })
@@ -30,6 +32,7 @@ export default function AmbassadorsUpload() {
   async function handleUpload() {
     if (!preview.length) return
     setUploading(true)
+    setShowConfirm(false)
 
     const rows = preview.map(row => ({
       real_name: row['본명'] || row['이름'] || '',
@@ -39,13 +42,26 @@ export default function AmbassadorsUpload() {
       instagram: row['인스타그램'] || row['instagram'] || '',
     })).filter(r => r.real_name)
 
-    const { error } = await supabase
+    // 기존 앰버서더 전체 삭제
+    const { error: deleteError } = await supabase
       .from('ambassadors')
-      .upsert(rows, { onConflict: 'real_name' })
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000') // 전체 삭제 트릭
+
+    if (deleteError) {
+      setUploading(false)
+      setResult({ success: false, message: '기존 데이터 삭제 실패: ' + deleteError.message })
+      return
+    }
+
+    // 새 데이터 insert
+    const { error: insertError } = await supabase
+      .from('ambassadors')
+      .insert(rows)
 
     setUploading(false)
-    if (error) {
-      setResult({ success: false, message: '업로드 실패: ' + error.message })
+    if (insertError) {
+      setResult({ success: false, message: '업로드 실패: ' + insertError.message })
     } else {
       await supabase.from('settings').upsert({ key: 'last_ambassador_upload', value: new Date().toISOString() })
       setResult({ success: true, count: rows.length })
@@ -64,6 +80,7 @@ export default function AmbassadorsUpload() {
     setPreview([])
     setFileName('')
     setResult(null)
+    setShowConfirm(false)
     if (fileRef.current) fileRef.current.value = ''
   }
 
@@ -93,7 +110,16 @@ export default function AmbassadorsUpload() {
 
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-gray-900 mb-2">앰버서더 명단 업로드</h1>
-          <p className="text-gray-500">기존 엑셀/구글시트 데이터를 그대로 올리시면 됩니다.<br/>본명 기준으로 자동 매핑되며, 기존 데이터는 덮어쓰기됩니다.</p>
+          <p className="text-gray-500">기존 명단을 완전히 새 파일로 교체합니다.<br/>업로드 시 기존 앰버서더 전체가 삭제되고 새 파일 기준으로 다시 등록됩니다.</p>
+        </div>
+
+        {/* 주의 안내 배너 */}
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-5 flex gap-3">
+          <span className="text-xl">⚠️</span>
+          <div>
+            <p className="text-amber-800 font-semibold text-sm">전체 교체 방식</p>
+            <p className="text-amber-700 text-xs mt-0.5">업로드하면 기존 앰버서더 명단이 전부 삭제되고 새 파일로 대체됩니다. 활동 중인 앰버서더가 모두 포함된 최신 파일을 올려주세요.</p>
+          </div>
         </div>
 
         <div className="bg-white rounded-2xl border p-6 mb-5">
@@ -194,8 +220,8 @@ export default function AmbassadorsUpload() {
             {result.success ? (
               <div className="text-center">
                 <div className="text-4xl mb-3">✅</div>
-                <p className="font-bold text-green-700 text-lg mb-1">{result.count}명 업로드 완료!</p>
-                <p className="text-green-600 text-sm mb-4">중복 본명은 최신 데이터로 덮어쓰기 되었습니다.</p>
+                <p className="font-bold text-green-700 text-lg mb-1">{result.count}명으로 명단 교체 완료!</p>
+                <p className="text-green-600 text-sm mb-4">기존 명단이 삭제되고 새 파일 기준으로 등록되었습니다.</p>
                 <div className="flex gap-3 justify-center">
                   <Link href="/admin" className="bg-green-600 hover:bg-green-700 text-white font-semibold px-5 py-2.5 rounded-xl text-sm transition-colors">
                     대시보드로 이동
@@ -211,14 +237,36 @@ export default function AmbassadorsUpload() {
           </div>
         )}
 
+        {/* 2단계 확인 버튼 */}
         {preview.length > 0 && !result?.success && (
-          <button
-            onClick={handleUpload}
-            disabled={uploading}
-            className="w-full bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white font-bold py-4 rounded-2xl text-base transition-colors"
-          >
-            {uploading ? '업로드 중...' : `${preview.length}명 업로드 실행`}
-          </button>
+          !showConfirm ? (
+            <button
+              onClick={() => setShowConfirm(true)}
+              className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl text-base transition-colors"
+            >
+              {preview.length}명으로 명단 전체 교체하기
+            </button>
+          ) : (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-5">
+              <p className="text-red-700 font-semibold text-center mb-1">⚠️ 정말 교체하시겠어요?</p>
+              <p className="text-red-500 text-sm text-center mb-4">기존 앰버서더 명단이 전부 삭제되고 새 파일({preview.length}명)로 대체됩니다.</p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowConfirm(false)}
+                  className="flex-1 bg-white border border-gray-300 text-gray-600 font-semibold py-3 rounded-xl text-sm hover:bg-gray-50 transition-colors"
+                >
+                  취소
+                </button>
+                <button
+                  onClick={handleUpload}
+                  disabled={uploading}
+                  className="flex-1 bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white font-bold py-3 rounded-xl text-sm transition-colors"
+                >
+                  {uploading ? '교체 중...' : '네, 전체 교체합니다'}
+                </button>
+              </div>
+            </div>
+          )
         )}
       </div>
     </div>
