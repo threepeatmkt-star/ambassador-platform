@@ -22,7 +22,6 @@ export default function ProductsUpload() {
     const reader = new FileReader()
     reader.onload = e => {
       const wb = XLSX.read(e.target.result, { type: 'binary' })
-      // Sheet1 우선 (카테고리2 포함 버전)
       const targetSheet = wb.Sheets['Sheet1'] || wb.Sheets[wb.SheetNames[0]]
       const data = XLSX.utils.sheet_to_json(targetSheet)
       setPreview(data)
@@ -43,12 +42,12 @@ export default function ProductsUpload() {
     setUploading(true)
 
     const rows = preview.map(row => ({
-      name: row['제품명'] || '',
-      sku: row['전산명(SKU)'] || row['전산명'] || row['SKU'] || '',
-      category1: row['카테고리'] || row['카테고리1'] || '',
-      category2: row['카테고리2'] || '',
-      category3: row['카테고리3'] || '',
-      image_url: row['이미지URL'] || row['이미지'] || '',
+      name: String(row['제품명'] || '').trim(),
+      sku: String(row['전산명(SKU)'] || row['전산명'] || row['SKU'] || '').trim(),
+      category1: String(row['카테고리'] || row['카테고리1'] || '').trim(),
+      category2: String(row['카테고리2'] || '').trim(),
+      category3: String(row['카테고리3'] || '').trim(),
+      image_url: String(row['이미지URL'] || row['이미지'] || '').trim(),
       is_active: true,
     })).filter(r => r.name && r.sku && r.category1)
 
@@ -58,7 +57,6 @@ export default function ProductsUpload() {
       return
     }
 
-    // 전체 교체 옵션 선택 시 기존 데이터 삭제
     if (replaceAll) {
       const { error: delError } = await supabase.from('products').delete().neq('id', '00000000-0000-0000-0000-000000000000')
       if (delError) {
@@ -68,7 +66,6 @@ export default function ProductsUpload() {
       }
     }
 
-    // 전체 교체 모드는 삭제 후 insert, 추가/업데이트 모드는 upsert
     const { error } = replaceAll
       ? await supabase.from('products').insert(rows)
       : await supabase.from('products').upsert(rows, { onConflict: 'sku' })
@@ -99,7 +96,6 @@ export default function ProductsUpload() {
     <div className="min-h-screen bg-gray-50">
       <Head><title>제품 DB 업로드 | 삼대오백 앰버서더 허브</title></Head>
 
-      {/* 추천운영방식 팝업 */}
       {showGuide && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowGuide(false)}>
           <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl" onClick={e => e.stopPropagation()}>
@@ -161,7 +157,6 @@ export default function ProductsUpload() {
           <p className="text-gray-500">엑셀 파일로 제품을 한 번에 등록하세요.<br/>전산명(SKU) 기준으로 중복 체크되며, 같은 SKU는 덮어쓰기됩니다.</p>
         </div>
 
-        {/* 컬럼 안내 */}
         <div className="bg-white rounded-2xl border p-6 mb-5">
           <p className="text-sm font-semibold text-gray-700 mb-4">엑셀 컬럼 형식 안내</p>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
@@ -194,7 +189,6 @@ export default function ProductsUpload() {
           </div>
         </div>
 
-        {/* 업로드 옵션 */}
         <div className="bg-white rounded-2xl border p-6 mb-5">
           <p className="text-sm font-semibold text-gray-700 mb-3">업로드 방식 선택</p>
           <div className="flex flex-col gap-3">
@@ -215,7 +209,6 @@ export default function ProductsUpload() {
           </div>
         </div>
 
-        {/* 파일 업로드 */}
         <div className="bg-white rounded-2xl border p-6 mb-5">
           <p className="text-sm font-semibold text-gray-700 mb-4">파일 선택</p>
           <div
@@ -241,7 +234,6 @@ export default function ProductsUpload() {
           </div>
         </div>
 
-        {/* 미리보기 */}
         {preview.length > 0 && (
           <div className="bg-white rounded-2xl border p-6 mb-5">
             <div className="mb-4">
@@ -278,7 +270,6 @@ export default function ProductsUpload() {
           </div>
         )}
 
-        {/* 결과 */}
         {result && (
           <div className={`rounded-2xl p-6 mb-5 ${result.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
             {result.success ? (
@@ -301,7 +292,6 @@ export default function ProductsUpload() {
           </div>
         )}
 
-        {/* 업로드 버튼 */}
         {preview.length > 0 && !result?.success && (
           <button
             onClick={handleUpload}
