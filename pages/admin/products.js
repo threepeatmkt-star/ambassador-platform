@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabase'
 import { useAdminAuth } from '../../lib/useAdminAuth'
 import Head from 'next/head'
 import Link from 'next/link'
+import AdminNav from '../../components/AdminNav'
 
 export default function AdminProducts() {
   const { session, loading: authLoading, logout } = useAdminAuth()
@@ -88,16 +89,11 @@ export default function AdminProducts() {
     <div className="min-h-screen bg-gray-50">
       <Head><title>제품 DB 관리 | 삼대오백 앰버서더 허브</title></Head>
 
-      <header className="bg-white border-b px-6 py-5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Link href="/admin" className="text-orange-500 font-bold text-lg">삼대오백 앰버서더 허브</Link>
-          <span className="text-gray-200">|</span>
-          <span className="text-gray-500 text-sm">제품 DB 관리</span>
-        </div>
-        <div className="flex items-center gap-3">
-          <Link href="/admin" className="text-gray-400 hover:text-gray-600 text-sm transition-colors">
-            ← 대시보드로
-          </Link>
+      <AdminNav active="products" onLogout={logout} />
+
+      <div className="max-w-7xl mx-auto px-8 pt-8 flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-gray-900">제품 DB 관리</h1>
+        <div className="flex gap-2">
           <Link href="/admin/products-upload" className="flex items-center gap-2 border border-orange-400 text-orange-500 hover:bg-orange-50 px-4 py-2 rounded-lg text-sm font-semibold transition-colors">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
@@ -108,9 +104,9 @@ export default function AdminProducts() {
             + 제품 추가
           </button>
         </div>
-      </header>
+      </div>
 
-      <div className="max-w-6xl mx-auto px-6 py-6">
+      <div className="max-w-7xl mx-auto px-8 py-6">
 
         {/* 필터 */}
         <div className="flex gap-2 mb-5 overflow-x-auto">
@@ -141,9 +137,9 @@ export default function AdminProducts() {
                   )}
                 </div>
                 <div className="p-3">
-                  <p className="text-orange-500 text-[10px] font-semibold">{[product.category1, product.category2, product.category3].filter(Boolean).join(' > ')}</p>
+                  <p className="text-orange-500 text-xs font-semibold">{[product.category1, product.category2, product.category3].filter(Boolean).join(' > ')}</p>
                   <p className="text-gray-900 text-xs font-medium mt-0.5 line-clamp-2">{product.name}</p>
-                  {product.sku && <p className="text-gray-400 text-[10px] mt-0.5">{product.sku}</p>}
+                  {product.sku && <p className="text-gray-400 text-xs mt-0.5">{product.sku}</p>}
                   <div className="flex gap-1 mt-3">
                     <button onClick={() => openEdit(product)} className="flex-1 text-xs border rounded-lg py-1.5 hover:bg-gray-50 text-gray-600">수정</button>
                     <button onClick={() => handleToggleActive(product)} className="flex-1 text-xs border rounded-lg py-1.5 hover:bg-gray-50 text-gray-600">{product.is_active ? '숨김' : '활성'}</button>

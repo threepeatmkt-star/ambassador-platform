@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/router'
+import AdminNav from '../../components/AdminNav'
 import Link from 'next/link'
 import { supabase } from '../../lib/supabase'
 import { useAdminAuth } from '../../lib/useAdminAuth'
@@ -8,6 +10,7 @@ import { groupByAmbassador, buildErpRows, makeErpSheet, fetchAdAssignments, mont
 
 export default function AdminDashboard() {
   const { session, loading: authLoading, logout } = useAdminAuth()
+  const router = useRouter()
 
   const [applications, setApplications] = useState([])
   const [ambassadors, setAmbassadors] = useState([])
@@ -30,6 +33,12 @@ export default function AdminDashboard() {
   useEffect(() => {
     if (session) loadData()
   }, [session])
+
+  // 상단 메뉴(/admin?tab=...)로 탭 이동
+  useEffect(() => {
+    const q = router.query.tab
+    if (q === 'applications' || q === 'ambassadors' || q === 'settings') setTab(q)
+  }, [router.query.tab])
 
   async function loadData() {
     setLoading(true)
@@ -207,52 +216,9 @@ export default function AdminDashboard() {
     <div className="min-h-screen bg-gray-50">
       <Head><title>어드민 | 삼대오백 앰버서더</title></Head>
 
-      {/* Header */}
-      <header className="bg-white border-b px-6 py-5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <span className="text-orange-500 font-bold text-lg">삼대오백 앰버서더 허브</span>
-          <span className="text-gray-300">|</span>
-          <span className="text-gray-600 text-sm">어드민 대시보드</span>
-        </div>
-        <button
-          onClick={logout}
-          className="text-gray-400 hover:text-gray-600 text-sm"
-        >
-          로그아웃
-        </button>
-      </header>
+      <AdminNav active={tab} onLogout={logout} />
 
-      {/* Tab nav */}
-      <div className="bg-white border-b px-6">
-        <div className="flex gap-0">
-          {[['applications', '신청 현황'], ['settings', '설정'], ['ambassadors', '앰버서더 명단']].map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${tab === key ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
-            >
-              {label}
-            </button>
-          ))}
-          <Link
-            href="/admin/products"
-            className="px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 flex items-center gap-1.5 transition-colors"
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-            </svg>
-            제품 DB 관리
-          </Link>
-          <Link
-            href="/admin/ads"
-            className="px-4 py-3 text-sm font-medium border-b-2 border-transparent text-orange-500 hover:text-orange-600 flex items-center gap-1.5 transition-colors"
-          >
-            광고제품 · 가이드
-          </Link>
-        </div>
-      </div>
-
-      <div className="max-w-6xl mx-auto px-6 py-6">
+      <div className="max-w-7xl mx-auto px-8 py-8">
 
         {/* ===== 신청 현황 탭 ===== */}
         {tab === 'applications' && (
@@ -379,7 +345,7 @@ export default function AdminDashboard() {
                             const amb = getAmbassadorInfo(app.real_name)
                             return (
                               <tr key={app.id} className={`border-b last:border-b-0 ${i % 2 === 0 ? '' : 'bg-gray-50/30'}`}>
-                                <td className="px-4 py-3 font-medium text-gray-900">{app.real_name}</td>
+                                <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{app.real_name}</td>
                                 <td className="px-4 py-3 text-gray-700">
                                   <div>{app.product1?.name}</div>
                                   {app.product1?.sku && <div className="text-xs text-gray-400">{app.product1.sku}</div>}
@@ -394,9 +360,9 @@ export default function AdminDashboard() {
                                   ))}
                                 </td>
                                 <td className="px-4 py-3 text-gray-500">{amb.phone || '-'}</td>
-                                <td className="px-4 py-3 text-gray-400 text-xs">{new Date(app.submitted_at).toLocaleString('ko-KR')}</td>
+                                <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">{new Date(app.submitted_at).toLocaleString('ko-KR')}</td>
                                 <td className="px-4 py-3">
-                                  <button onClick={() => handleCancel(app)} className="text-xs text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 rounded-lg px-3 py-1.5 transition-colors">
+                                  <button onClick={() => handleCancel(app)} className="text-xs text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 rounded-lg px-3 py-1.5 transition-colors whitespace-nowrap">
                                     신청 취소
                                   </button>
                                 </td>
@@ -551,7 +517,7 @@ export default function AdminDashboard() {
                   <tbody>
                     {ambassadors.map((amb, i) => (
                       <tr key={amb.id} className={`border-b last:border-b-0 ${i % 2 === 0 ? '' : 'bg-gray-50/30'}`}>
-                        <td className="px-4 py-3 font-medium text-gray-900">{amb.real_name}</td>
+                        <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{amb.real_name}</td>
                         <td className="px-4 py-3 text-gray-500">@{amb.instagram || '-'}</td>
                         <td className="px-4 py-3 text-gray-500">{amb.phone || '-'}</td>
                         <td className="px-4 py-3 text-gray-500 text-xs">{amb.address} {amb.address_detail}</td>

@@ -4,6 +4,7 @@ import { useAdminAuth } from '../../lib/useAdminAuth'
 import { formatGuide, parseGuide, toLatestFormat, emptyItem, guideWarnings, monthNumber, normalizeHashtags, countHashtags, HASHTAG_COUNT, MAX_SELLING_POINTS } from '../../lib/guide'
 import Head from 'next/head'
 import Link from 'next/link'
+import AdminNav from '../../components/AdminNav'
 import * as XLSX from 'xlsx'
 
 function monthOptions() {
@@ -36,7 +37,7 @@ async function copyText(text) {
 }
 
 export default function AdminAds() {
-  const { session, loading: authLoading } = useAdminAuth()
+  const { session, loading: authLoading, logout } = useAdminAuth()
   const [month, setMonth] = useState('')
   const [tab, setTab] = useState('items') // items | assign | send
   const [products, setProducts] = useState([])
@@ -363,18 +364,9 @@ export default function AdminAds() {
     <div className="min-h-screen bg-gray-50">
       <Head><title>광고제품 · 가이드 | 삼대오백 앰버서더 허브</title></Head>
 
-      <header className="bg-white border-b px-6 py-5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Link href="/admin" className="text-orange-500 font-bold text-lg">삼대오백 앰버서더 허브</Link>
-          <span className="text-gray-200">|</span>
-          <span className="text-gray-500 text-sm">광고제품 · 가이드</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <Link href="/admin" className="text-gray-400 hover:text-gray-600 text-sm">← 대시보드로</Link>
-        </div>
-      </header>
+      <AdminNav active="ads" onLogout={logout} />
 
-      <div className="max-w-7xl mx-auto px-6 py-6">
+      <div className="max-w-7xl mx-auto px-8 py-8">
         {/* 월 선택 + 탭 */}
         <div className="bg-white rounded-xl border p-4 mb-5 flex flex-wrap items-center gap-3">
           <select value={month} onChange={e => changeMonth(e.target.value)} className="border rounded-lg px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-orange-400">
@@ -422,13 +414,13 @@ export default function AdminAds() {
                               <button onClick={() => moveItem(item, 1)} disabled={idx === items.length - 1} className="text-gray-400 hover:text-gray-700 disabled:opacity-30 text-xs px-1">▼</button>
                             </div>
                           </div>
-                          <p className="text-[11px] text-orange-600 mb-2">{item.pick_mode === 'one' ? '사람별로 1개 선택' : '연결 제품 모두 발송'} · 배정 {count}명</p>
+                          <p className="text-xs text-orange-600 mb-2">{item.pick_mode === 'one' ? '사람별로 1개 선택' : '연결 제품 모두 발송'} · 배정 {count}명</p>
                           <div className="space-y-0.5 mb-3">
                             {item.products.map(p => (
                               <p key={p.id} className={`text-xs ${p.is_active ? 'text-gray-600' : 'text-gray-400'}`}>· {p.name}{p.quantity > 1 && <b className="text-orange-600"> ×{p.quantity}</b>}{!p.is_active && ' (숨김 제품)'} <span className="text-gray-400">({(p.sku || '').trim() || '전산명 없음'})</span></p>
                             ))}
                           </div>
-                          {warns.length > 0 && <p className="text-[11px] text-amber-600 mb-3">⚠️ {warns.join(' · ')}</p>}
+                          {warns.length > 0 && <p className="text-xs text-amber-600 mb-3">⚠️ {warns.join(' · ')}</p>}
                           <div className="flex gap-2 mt-auto">
                             <button onClick={async () => setMsg(await copyText(formatGuide(item, month)) ? `'${item.title}' 가이드를 복사했어요.` : '복사 실패')} className="flex-1 bg-gray-900 hover:bg-gray-700 text-white rounded-lg py-2 text-xs font-semibold">가이드 복사</button>
                             <button onClick={() => openEdit(item)} className="flex-1 border rounded-lg py-2 text-xs text-gray-600 hover:bg-gray-50">수정</button>
@@ -469,15 +461,15 @@ export default function AdminAds() {
                                   <p className="text-xs text-gray-800 font-semibold leading-snug line-clamp-2">{item.title}</p>
                                   <div className="mt-1">
                                     {item.pick_mode === 'one' ? (
-                                      <select value="" onChange={e => e.target.value && bulkColumn(item, e.target.value === '__none' ? null : e.target.value)} className="border rounded px-1 py-0.5 text-[11px] text-gray-500 w-full font-normal">
+                                      <select value="" onChange={e => e.target.value && bulkColumn(item, e.target.value === '__none' ? null : e.target.value)} className="border rounded px-1 py-0.5 text-xs text-gray-500 w-full font-normal">
                                         <option value="">일괄 지정…</option>
                                         {item.products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                                         <option value="__none">전체 해제</option>
                                       </select>
                                     ) : (
                                       <div className="flex gap-1">
-                                        <button onClick={() => bulkColumn(item, true)} className="border rounded px-2 py-0.5 text-[11px] text-gray-500 font-normal hover:bg-white">전체 배정</button>
-                                        <button onClick={() => bulkColumn(item, null)} className="border rounded px-2 py-0.5 text-[11px] text-gray-500 font-normal hover:bg-white">전체 해제</button>
+                                        <button onClick={() => bulkColumn(item, true)} className="border rounded px-2 py-0.5 text-xs text-gray-500 font-normal hover:bg-white">전체 배정</button>
+                                        <button onClick={() => bulkColumn(item, null)} className="border rounded px-2 py-0.5 text-xs text-gray-500 font-normal hover:bg-white">전체 해제</button>
                                       </div>
                                     )}
                                   </div>
@@ -493,7 +485,7 @@ export default function AdminAds() {
                                 <tr key={n} className="border-b last:border-0 hover:bg-orange-50/30">
                                   <td className="px-3 py-2 font-medium text-gray-900 sticky left-0 bg-white">
                                     {n}
-                                    {notInRoster && <span className="block text-[10px] text-red-500">명단에 없음</span>}
+                                    {notInRoster && <span className="block text-xs text-red-500">명단에 없음</span>}
                                   </td>
                                   <td className="px-3 py-2 text-xs min-w-[150px]">{appliedNames.has(n) ? <span className="text-green-700">{(freeByName[n] || []).join(', ') || '신청'}</span> : <span className="text-gray-400">미신청</span>}</td>
                                   {items.map(item => {
@@ -668,7 +660,7 @@ function ItemEditor({ editor, setEditor, products, library, month, saving, onSav
                     {p.name}
                     <span className="text-orange-400">×</span>
                     <input type="number" min={1} value={p.quantity || 1} title="1인당 수량" onChange={ev => set({ products: e.products.map(x => x.id === p.id ? { ...x, quantity: Math.max(1, Number(ev.target.value) || 1) } : x) })} className="w-10 bg-white/70 rounded px-1 text-xs text-gray-800" />
-                    <button onClick={() => set({ products: e.products.filter(x => x.id !== p.id) })} className="w-4 h-4 rounded-full hover:bg-orange-200 text-[10px]">✕</button>
+                    <button onClick={() => set({ products: e.products.filter(x => x.id !== p.id) })} className="w-4 h-4 rounded-full hover:bg-orange-200 text-xs">✕</button>
                   </span>
                 ))}
                 {!e.products.length && <span className="text-xs text-gray-400">아래에서 검색해 추가하세요.</span>}
@@ -693,7 +685,7 @@ function ItemEditor({ editor, setEditor, products, library, month, saving, onSav
                   <label key={k} className={`border-2 rounded-xl p-3 cursor-pointer ${e.pick_mode === k ? 'border-orange-400 bg-orange-50' : 'border-gray-200'}`}>
                     <input type="radio" checked={e.pick_mode === k} onChange={() => set({ pick_mode: k })} className="mr-1.5 accent-orange-500" />
                     <span className="text-sm font-medium text-gray-800">{l}</span>
-                    <p className="text-[11px] text-gray-400 mt-0.5">{d}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{d}</p>
                   </label>
                 ))}
               </div>
@@ -748,7 +740,7 @@ function ItemEditor({ editor, setEditor, products, library, month, saving, onSav
               <p className="text-xs font-semibold text-gray-500">가이드 미리보기</p>
               <button onClick={() => copyText(preview)} className="text-xs border rounded-lg px-3 py-1 text-gray-600 hover:bg-gray-50">복사</button>
             </div>
-            <pre className="whitespace-pre-wrap font-sans text-[13px] text-gray-800 bg-gray-50 border rounded-xl p-4 leading-relaxed max-h-[65vh] overflow-y-auto">{preview}</pre>
+            <pre className="whitespace-pre-wrap font-sans text-sm text-gray-800 bg-gray-50 border rounded-xl p-4 leading-relaxed max-h-[65vh] overflow-y-auto">{preview}</pre>
             {warns.length > 0 && <p className="text-xs text-amber-600 mt-2">⚠️ {warns.join(' · ')}</p>}
           </div>
         </div>
