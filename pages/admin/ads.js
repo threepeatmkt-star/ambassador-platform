@@ -42,6 +42,9 @@ export default function AdminAds() {
   const [products, setProducts] = useState([])
   const [ambassadors, setAmbassadors] = useState([])
   const [appliedNames, setAppliedNames] = useState(new Set())
+  const [freeByName, setFreeByName] = useState({}) // 이번 달 무상 신청 제품
+  const [saveState, setSaveState] = useState('') // '' | saving | saved | error
+  const saveQueue = useRef(Promise.resolve())
   const [items, setItems] = useState([])
   const [assign, setAssign] = useState({}) // `${name}|${itemId}` -> productId (one) | true (all)
   const [savedAssign, setSavedAssign] = useState({})
@@ -80,7 +83,7 @@ export default function AdminAds() {
     const [itemsRes, assignRes, appsRes] = await Promise.all([
       supabase.from('ad_items').select(ITEM_SELECT).eq('month', m).order('sort_order').order('created_at'),
       supabase.from('ad_assignments').select('real_name, item_id, product_id').eq('month', m),
-      supabase.from('applications').select('real_name').eq('month', m),
+      supabase.from('applications').select('real_name, product1:products!applications_product1_id_fkey(name), product2:products!applications_product2_id_fkey(name)').eq('month', m),
     ])
     if (itemsRes.error) {
       setMsg('광고제품 테이블을 불러오지 못했어요. SQL(20261113000001_ad_products.sql)을 먼저 실행해주세요. (' + itemsRes.error.message + ')')
@@ -98,10 +101,11 @@ export default function AdminAds() {
     setAssign(a)
     setSavedAssign(a)
     setAppliedNames(new Set((appsRes.data || []).map(r => r.real_name)))
+    setFreeByName(Object.fromEntries((appsRes.data || []).map(r => [r.real_name, [r.product1?.name, r.product2?.name].filter(Boolean)])))
     setLoading(false)
   }
 
-  const dirty = JSON.stringify(assign) !== JSON.stringify(savedAssign)
+  const dirty = false // 배정은 고르는 즉시 자동 저장
 
   function changeMonth(m) {
     if (dirty && !confirm('저장하지 않은 배정 변경사항이 있어요. 이동할까요?')) return
@@ -226,24 +230,67 @@ export default function AdminAds() {
   const people = [...ambassadors.map(a => a.real_name), ...extraNames]
   const visiblePeople = people.filter(n => !nameFilter || n.includes(nameFilter.trim()))
 
+  // 칸을 바꾸면 그 사람·그 광고제품 배정을 즉시 DB에 저장
+  function rowsFor(name, item, value) {
+    if (!value) return []
+    const prods = value === true ? item.products : item.products.filter(p => p.id === value)
+    return prods.map(p => ({ month, real_name: name, item_id: item.id, product_id: p.id, product_name: p.name, sku: (p.sku || '').trim(), quantity: p.quantity || 1 }))
+  }
+
+  function persist(changes) {
+    // changes: [{ name, item, value }] — 순서대로 저장(큐)해서 빠르게 여러 번 눌러도 꼬이지 않게
+    setSaveState('saving')
+    saveQueue.current = saveQueue.current.then(async () => {
+      for (const { name, item, value } of changes) {
+        const { error: delErr } = await supabase.from('ad_assignments').delete().eq('item_id', item.id).eq('real_name', name)
+        if (delErr) throw delErr
+        const rows = rowsFor(name, item, value)
+        if (rows.length) {
+          const { error } = await supabase.from('ad_assignments').insert(rows)
+          if (error) throw error
+        }
+      }
+    }).then(() => {
+      setSavedAssign(prev => {
+        const next = { ...prev }
+        changes.forEach(({ name, item, value }) => {
+          const key = `${name}|${item.id}`
+          if (value) next[key] = value
+          else delete next[key]
+        })
+        return next
+      })
+      setSaveState('saved')
+    }).catch(err => {
+      setSaveState('error')
+      alert('배정 저장 실패: ' + (err?.message || err) + '\n화면을 새로고침해 주세요.')
+    })
+  }
+
   function setCell(name, item, value) {
     const key = `${name}|${item.id}`
-    const next = { ...assign }
-    if (!value) delete next[key]
-    else next[key] = value
-    setAssign(next)
+    setAssign(prev => {
+      const next = { ...prev }
+      if (!value) delete next[key]
+      else next[key] = value
+      return next
+    })
+    persist([{ name, item, value }])
   }
 
   function bulkColumn(item, value) {
     const label = value === null ? '해제' : value === true ? '전체 배정' : item.products.find(p => p.id === value)?.name
     if (!confirm(`보이는 ${visiblePeople.length}명 모두 [${item.title}] → ${label} 로 바꿀까요?`)) return
-    const next = { ...assign }
-    visiblePeople.forEach(n => {
-      const key = `${n}|${item.id}`
-      if (value) next[key] = value
-      else delete next[key]
+    setAssign(prev => {
+      const next = { ...prev }
+      visiblePeople.forEach(n => {
+        const key = `${n}|${item.id}`
+        if (value) next[key] = value
+        else delete next[key]
+      })
+      return next
     })
-    setAssign(next)
+    persist(visiblePeople.map(n => ({ name: n, item, value })))
   }
 
   function personCount(name) {
@@ -404,11 +451,11 @@ export default function AdminAds() {
                   <>
                     <div className="flex flex-wrap items-center gap-3 mb-3">
                       <input value={nameFilter} onChange={e => setNameFilter(e.target.value)} placeholder="이름 검색" className="border rounded-lg px-3 py-2 text-sm w-40 focus:outline-none focus:ring-2 focus:ring-orange-400" />
-                      <p className="text-xs text-gray-400">칸마다 광고제품을 고르세요. 사람마다 다르게, 한 사람에게 여러 개 배정할 수 있어요.</p>
+                      <p className="text-xs text-gray-400">칸마다 광고제품을 고르면 바로 저장되고 [가이드 발송 목록]·[신청 현황 엑셀]에 반영돼요.</p>
                       <div className="flex-1" />
-                      {dirty && <span className="text-xs text-orange-600">저장 안 된 변경사항 있음</span>}
-                      <button onClick={() => setAssign(savedAssign)} disabled={!dirty} className="border rounded-lg px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40">되돌리기</button>
-                      <button onClick={saveAssignments} disabled={!dirty || saving} className="bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white font-semibold px-5 py-2 rounded-lg text-sm">{saving ? '저장 중...' : '배정 저장'}</button>
+                      <span className={`text-xs font-medium px-3 py-1.5 rounded-lg ${saveState === 'error' ? 'bg-red-50 text-red-600' : saveState === 'saving' ? 'bg-orange-50 text-orange-600' : 'bg-green-50 text-green-700'}`}>
+                        {saveState === 'saving' ? '저장 중…' : saveState === 'error' ? '저장 실패 - 새로고침 필요' : '✓ 고르는 즉시 자동 저장'}
+                      </span>
                     </div>
                     <div className="bg-white rounded-xl border overflow-hidden">
                       <div className="overflow-auto max-h-[72vh]">
@@ -416,7 +463,7 @@ export default function AdminAds() {
                           <thead className="sticky top-0 z-10 bg-gray-50">
                             <tr className="border-b">
                               <th className="px-3 py-2 text-left text-xs text-gray-500 font-medium sticky left-0 bg-gray-50 min-w-[110px]">본명</th>
-                              <th className="px-3 py-2 text-left text-xs text-gray-500 font-medium">무상 신청</th>
+                              <th className="px-3 py-2 text-left text-xs text-gray-500 font-medium">무상제품 (앰버서더 신청)</th>
                               {items.map(item => (
                                 <th key={item.id} className="px-3 py-2 text-left align-top min-w-[190px]">
                                   <p className="text-xs text-gray-800 font-semibold leading-snug line-clamp-2">{item.title}</p>
@@ -448,7 +495,7 @@ export default function AdminAds() {
                                     {n}
                                     {notInRoster && <span className="block text-[10px] text-red-500">명단에 없음</span>}
                                   </td>
-                                  <td className="px-3 py-2 text-xs">{appliedNames.has(n) ? <span className="text-green-600">신청</span> : <span className="text-gray-400">미신청</span>}</td>
+                                  <td className="px-3 py-2 text-xs min-w-[150px]">{appliedNames.has(n) ? <span className="text-green-700">{(freeByName[n] || []).join(', ') || '신청'}</span> : <span className="text-gray-400">미신청</span>}</td>
                                   {items.map(item => {
                                     const v = assign[`${n}|${item.id}`]
                                     return (
@@ -484,11 +531,10 @@ export default function AdminAds() {
             {tab === 'send' && (
               <div>
                 <div className="flex items-center justify-between mb-4">
-                  <p className="text-sm text-gray-500">가이드별로 받을 사람을 확인하고, 가이드를 복사해 DM으로 보내세요. (저장된 배정 기준)</p>
+                  <p className="text-sm text-gray-500">가이드별로 받을 사람을 확인하고, 가이드를 복사해 DM으로 보내세요. (사람별 배정 탭에서 고르면 바로 반영)</p>
                   <button onClick={downloadAssignmentSheet} className="bg-green-600 hover:bg-green-700 text-white font-semibold px-4 py-2 rounded-lg text-sm">배정표 엑셀</button>
                 </div>
-                {dirty && <p className="text-xs text-orange-600 mb-3">⚠️ 저장하지 않은 배정 변경사항은 여기에 반영되지 않아요.</p>}
-                <div className="grid lg:grid-cols-2 gap-4">
+                                <div className="grid lg:grid-cols-2 gap-4">
                   {recipientsByItem.map(({ item, names }) => (
                     <div key={item.id} className="bg-white rounded-xl border p-5">
                       <div className="flex items-start justify-between gap-3 mb-3">
