@@ -4,7 +4,7 @@
 // - register: 실제로 ERP 배송주문 등록
 import { createClient } from '@supabase/supabase-js'
 import { groupByAmbassador, buildErpRows, fetchAdAssignments } from '../../../lib/erp'
-import { erpLogin, erpProductMap, buildErpPayload, erpCreateDeliveryOrder, erpFindOrderByMemo, erpMonthShipped } from '../../../lib/erpApi'
+import { erpLogin, erpProductMap, buildErpPayload, erpCreateDeliveryOrder, erpFindOrderByMemo, erpMonthShipped, erpResolveApprovers, ERP_APPROVERS } from '../../../lib/erpApi'
 
 const APP_SELECT = `
   id, month, real_name, submitted_at,
@@ -26,7 +26,7 @@ export default async function handler(req, res) {
   const { data: userData, error: userErr } = await supabase.auth.getUser(userToken)
   if (userErr || !userData?.user) return res.status(401).json({ error: '관리자 로그인이 만료됐어요. 다시 로그인해주세요.' })
 
-  const { month, shipDate, types = ['free', 'ad'], message = '', skipIssues = false, mode = 'check', force = false, includeShipped = false } = req.body || {}
+  const { month, shipDate, types = ['free', 'ad'], message = '', skipIssues = false, mode = 'check', force = false, includeShipped = false, approvers: approverEmails } = req.body || {}
 
   // 저장된 ERP 계정 (관리자만 꺼낼 수 있음)
   const { data: credRows, error: credErr } = await supabase.rpc('get_erp_credentials')
@@ -78,14 +78,19 @@ export default async function handler(req, res) {
 
     // 4) 제품 매칭
     const productMap = await erpProductMap(token)
-    const { payload, unknown, summary } = buildErpPayload(useRows, productMap, { shipDate, memo })
+    const pick = (Array.isArray(approverEmails) && approverEmails.length ? approverEmails : [ERP_APPROVERS[0].email])
+      .filter(e => ERP_APPROVERS.some(a => a.email === e))
+    if (!pick.length) return res.status(400).json({ error: '승인 담당자를 선택해주세요.' })
+    const approvers = await erpResolveApprovers(token, pick)
+    const approverNames = approvers.map(a => a.staff_name)
+    const { payload, unknown, summary } = buildErpPayload(useRows, productMap, { shipDate, memo, approvers })
     if (unknown.length) return res.status(400).json({ error: `ERP에서 찾을 수 없는 전산명 ${unknown.length}건`, unknown })
 
     const existing = await erpFindOrderByMemo(token, memo, `${month}-01`).catch(() => null)
     const duplicate = existing ? { site: already, erp: existing } : null
 
     if (mode !== 'register') {
-      return res.status(200).json({ ok: true, mode: 'check', memo, shipDate, summary, duplicate, excluded, priorOrders: shipped.orders })
+      return res.status(200).json({ ok: true, mode: 'check', memo, shipDate, summary, duplicate, excluded, priorOrders: shipped.orders, approverNames })
     }
     if (duplicate && !force) {
       return res.status(409).json({ error: '이번 달 ERP 등록 기록이 이미 있어요. 중복 등록이 아닌지 확인해주세요.', duplicate })
@@ -94,7 +99,7 @@ export default async function handler(req, res) {
     // 5) 실제 등록
     const result = await erpCreateDeliveryOrder(token, payload)
     const created = await erpFindOrderByMemo(token, memo).catch(() => null)
-    const record = { date: shipDate, memo, rows: summary.lines, people: summary.people, qty: summary.qty, at: new Date().toISOString(), auto: true, orderNumber: created?.orderNumber || null, erpId: created?.id || null, excluded: excluded.length }
+    const record = { date: shipDate, memo, rows: summary.lines, people: summary.people, qty: summary.qty, at: new Date().toISOString(), auto: true, orderNumber: created?.orderNumber || null, erpId: created?.id || null, excluded: excluded.length, approvers: approverNames }
     await supabase.from('settings').upsert({ key: `erp_registered_${month}`, value: JSON.stringify(record) })
     return res.status(200).json({ ok: true, mode: 'register', record, erp: result?.response_code ?? null })
   } catch (e) {
