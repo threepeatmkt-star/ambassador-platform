@@ -8,6 +8,11 @@ import { groupByAmbassador, buildErpRows, makeErpWorkbook, fetchAdAssignments, E
 import AdminNav from '../../components/AdminNav'
 import PageHeader, { StatCards } from '../../components/PageHeader'
 
+const APPROVERS = [
+  { email: 'nhkim2@oa-world.com', name: '김나형', note: '기본' },
+  { email: 'wsseo@oa-world.com', name: '서원상', note: '김나형 부재 시' },
+]
+
 const ERP_URL = 'https://erpw.oa-corp.com/home/sales/delivery_order'
 
 const APP_SELECT = `
@@ -41,6 +46,7 @@ export default function AdminShipping() {
   const [toast, setToast] = useState('')
   const [autoState, setAutoState] = useState({ phase: 'idle' }) // idle | checking | checked | registering | done | error
   const [showManual, setShowManual] = useState(false)
+  const [approver, setApprover] = useState(APPROVERS[0].email) // 기본 김나형, 부재 시 서원상
   const loadedFor = useRef('')
 
   useEffect(() => {
@@ -95,7 +101,7 @@ export default function AdminShipping() {
     const res = await fetch('/api/erp/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ month, shipDate, types, message: message.trim(), skipIssues, mode, force }),
+      body: JSON.stringify({ month, shipDate, types, message: message.trim(), skipIssues, mode, force, approvers: [approver] }),
     })
     const json = await res.json().catch(() => ({ error: '응답을 읽지 못했어요.' }))
     return { status: res.status, ...json }
@@ -111,7 +117,7 @@ export default function AdminShipping() {
   async function registerErp() {
     const c = autoState
     const dupNote = c.duplicate ? '\n\n⚠️ 이번 달 등록 기록이 이미 있어요. 그래도 등록할까요?' : ''
-    if (!confirm(`ERP에 배송주문을 등록할까요?\n\n발송일: ${c.shipDate}\n${c.summary.people}명 · ${c.summary.lines}행 · ${c.summary.qty}개\n메모: ${c.memo}${dupNote}`)) return
+    if (!confirm(`ERP에 배송주문을 등록할까요?\n\n발송일: ${c.shipDate}\n${c.summary.people}명 · ${c.summary.lines}행 · ${c.summary.qty}개\n승인 담당자: ${(c.approverNames || []).join(', ')}\n메모: ${c.memo}${dupNote}`)) return
     setAutoState({ ...c, phase: 'registering' })
     const r = await callErp('register', !!c.duplicate)
     if (!r.ok) { setAutoState({ ...c, phase: 'error', error: r.error, detail: r.unknown || r.issues }); return }
@@ -254,6 +260,16 @@ export default function AdminShipping() {
             <div className="bg-white rounded-2xl border p-5">
               <p className="text-sm font-bold text-orange-600 mb-2">STEP 1 · 발송일 정하기</p>
               <input type="date" value={shipDate} onChange={e => { setShipDate(e.target.value); setAutoState({ phase: 'idle' }) }} className="w-full border rounded-xl px-4 py-2.5 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-orange-400" />
+              <p className="text-sm font-bold text-orange-600 mt-4 mb-2">승인 담당자</p>
+              <div className="grid grid-cols-2 gap-2">
+                {APPROVERS.map(a => (
+                  <button key={a.email} type="button" onClick={() => { setApprover(a.email); setAutoState({ phase: 'idle' }) }}
+                    className={`rounded-xl border-2 px-3 py-2 text-left ${approver === a.email ? 'border-orange-500 bg-orange-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                    <span className="block font-bold">{a.name}</span>
+                    <span className="block text-xs text-gray-500">{a.note}</span>
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="bg-white rounded-2xl border-2 border-orange-300 p-5">
@@ -262,7 +278,7 @@ export default function AdminShipping() {
                 <div className="text-center py-2">
                   <p className="text-green-600 font-bold text-lg">✓ ERP 등록 완료</p>
                   <p className="text-sm text-gray-600 mt-1">주문번호 <b>{autoState.record.orderNumber || '(ERP 목록에서 확인)'}</b></p>
-                  <p className="text-xs text-gray-400 mt-1">발송일 {autoState.record.date} · {autoState.record.people}명 · {autoState.record.rows}행</p>
+                  <p className="text-xs text-gray-400 mt-1">발송일 {autoState.record.date} · {autoState.record.people}명 · {autoState.record.rows}행{autoState.record.approvers?.length ? ` · 승인 ${autoState.record.approvers.join(', ')}` : ''}</p>
                   <a href={ERP_URL} target="_blank" rel="noreferrer" className="inline-block mt-3 text-sm text-orange-600 underline">ERP에서 보기 ↗</a>
                 </div>
               ) : (
@@ -285,6 +301,7 @@ export default function AdminShipping() {
                       <p>✓ ERP 로그인 · 제품 {autoState.summary.lines}행 모두 매칭</p>
                       <p className="text-gray-600">{autoState.summary.people}명 · {autoState.summary.lines}행 · {autoState.summary.qty}개 · 발송일 <b>{autoState.shipDate}</b></p>
                       <p className="text-gray-600 break-keep">메모: {autoState.memo}</p>
+                      <p className="text-gray-600">승인 담당자: <b>{(autoState.approverNames || []).join(', ')}</b></p>
                       {autoState.excluded?.length > 0 && (
                         <div className="text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2 mt-1">
                           <p className="font-semibold">이미 ERP에 등록된 {autoState.excluded.length}명은 제외했어요</p>
