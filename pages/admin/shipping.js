@@ -39,6 +39,8 @@ export default function AdminShipping() {
   const [skipIssues, setSkipIssues] = useState(false)
   const [registered, setRegistered] = useState(null) // { date, memo, rows, people, at }
   const [toast, setToast] = useState('')
+  const [autoState, setAutoState] = useState({ phase: 'idle' }) // idle | checking | checked | registering | done | error
+  const [showManual, setShowManual] = useState(false)
   const loadedFor = useRef('')
 
   useEffect(() => {
@@ -87,6 +89,36 @@ export default function AdminShipping() {
     ['메모', memo, true],
   ]
 
+  async function callErp(mode, force = false) {
+    const { data } = await supabase.auth.getSession()
+    const token = data?.session?.access_token
+    const res = await fetch('/api/erp/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ month, shipDate, types, message: message.trim(), skipIssues, mode, force }),
+    })
+    const json = await res.json().catch(() => ({ error: '응답을 읽지 못했어요.' }))
+    return { status: res.status, ...json }
+  }
+
+  async function checkErp() {
+    setAutoState({ phase: 'checking' })
+    const r = await callErp('check')
+    if (!r.ok) { setAutoState({ phase: 'error', error: r.error, detail: r.unknown || r.issues }); return }
+    setAutoState({ phase: 'checked', ...r })
+  }
+
+  async function registerErp() {
+    const c = autoState
+    const dupNote = c.duplicate ? '\n\n⚠️ 이번 달 등록 기록이 이미 있어요. 그래도 등록할까요?' : ''
+    if (!confirm(`ERP에 배송주문을 등록할까요?\n\n발송일: ${c.shipDate}\n${c.summary.people}명 · ${c.summary.lines}행 · ${c.summary.qty}개\n메모: ${c.memo}${dupNote}`)) return
+    setAutoState({ ...c, phase: 'registering' })
+    const r = await callErp('register', !!c.duplicate)
+    if (!r.ok) { setAutoState({ ...c, phase: 'error', error: r.error, detail: r.unknown || r.issues }); return }
+    setRegistered(r.record)
+    setAutoState({ phase: 'done', record: r.record })
+  }
+
   function flash(t) {
     setToast(t)
     setTimeout(() => setToast(''), 2000)
@@ -126,7 +158,7 @@ export default function AdminShipping() {
       <div className="max-w-7xl mx-auto px-8 py-8">
         <PageHeader
           title="ERP 출고"
-          desc={`${monthLabel(month)} 무상 + 광고제품을 오아 ERP 배송주문 양식으로 만들어요. 등록은 직접 하세요.`}
+          desc={`${monthLabel(month)} 무상 + 광고제품을 오아 ERP 배송주문으로 바로 등록해요.`}
         />
 
         {registered && (
@@ -221,9 +253,56 @@ export default function AdminShipping() {
           <div className="space-y-4 lg:sticky lg:top-40 self-start">
             <div className="bg-white rounded-2xl border p-5">
               <p className="text-sm font-bold text-orange-600 mb-2">STEP 1 · 발송일 정하기</p>
-              <input type="date" value={shipDate} onChange={e => setShipDate(e.target.value)} className="w-full border rounded-xl px-4 py-2.5 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-orange-400" />
+              <input type="date" value={shipDate} onChange={e => { setShipDate(e.target.value); setAutoState({ phase: 'idle' }) }} className="w-full border rounded-xl px-4 py-2.5 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-orange-400" />
             </div>
 
+            <div className="bg-white rounded-2xl border-2 border-orange-300 p-5">
+              <p className="text-sm font-bold text-orange-600 mb-3">STEP 2 · ERP에 바로 등록</p>
+              {autoState.phase === 'done' ? (
+                <div className="text-center py-2">
+                  <p className="text-green-600 font-bold text-lg">✓ ERP 등록 완료</p>
+                  <p className="text-sm text-gray-600 mt-1">주문번호 <b>{autoState.record.orderNumber || '(ERP 목록에서 확인)'}</b></p>
+                  <p className="text-xs text-gray-400 mt-1">발송일 {autoState.record.date} · {autoState.record.people}명 · {autoState.record.rows}행</p>
+                  <a href={ERP_URL} target="_blank" rel="noreferrer" className="inline-block mt-3 text-sm text-orange-600 underline">ERP에서 보기 ↗</a>
+                </div>
+              ) : (
+                <>
+                  <button onClick={checkErp} disabled={!canExport || autoState.phase === 'checking' || autoState.phase === 'registering'} className="w-full border-2 border-gray-900 text-gray-900 hover:bg-gray-50 disabled:opacity-40 font-bold py-3 rounded-xl">
+                    {autoState.phase === 'checking' ? 'ERP 확인 중…' : '① 등록 전 확인'}
+                  </button>
+                  <p className="text-xs text-gray-400 mt-1.5 mb-3">ERP 로그인 · 제품 매칭 · 중복 여부만 확인해요 (등록 안 함)</p>
+
+                  {autoState.phase === 'error' && (
+                    <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-3 text-sm text-red-600">
+                      {autoState.error}
+                      {Array.isArray(autoState.detail) && autoState.detail.slice(0, 8).map((d, i) => <div key={i} className="text-xs mt-1">· {d.receiver || d.name} {d.sku || d.product} {d.problem || ''}</div>)}
+                    </div>
+                  )}
+
+                  {(autoState.phase === 'checked' || autoState.phase === 'registering') && (
+                    <div className="bg-gray-50 rounded-xl p-3 mb-3 text-sm space-y-1">
+                      <p>✓ ERP 로그인 · 제품 {autoState.summary.lines}행 모두 매칭</p>
+                      <p className="text-gray-600">{autoState.summary.people}명 · {autoState.summary.lines}행 · {autoState.summary.qty}개 · 발송일 <b>{autoState.shipDate}</b></p>
+                      <p className="text-gray-600 break-keep">메모: {autoState.memo}</p>
+                      {autoState.duplicate && <p className="text-amber-700 font-semibold">⚠️ 이번 달 등록 기록이 이미 있어요 {autoState.duplicate.erp?.orderNumber ? `(${autoState.duplicate.erp.orderNumber})` : ''}</p>}
+                    </div>
+                  )}
+
+                  <button onClick={registerErp} disabled={autoState.phase !== 'checked'} className="w-full bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white font-bold py-3.5 rounded-xl text-lg">
+                    {autoState.phase === 'registering' ? 'ERP에 등록 중…' : '② ERP에 바로 등록'}
+                  </button>
+                  <p className="text-xs text-gray-400 mt-2">일반 배송 · 기타 배송 · 마케팅 · 택배 · 포항물류로 등록되고, 끝나면 자동으로 '등록 완료' 표시돼요.</p>
+                </>
+              )}
+            </div>
+
+            <div className="bg-white rounded-2xl border p-5">
+              <button onClick={() => setShowManual(!showManual)} className="w-full flex items-center justify-between text-sm font-semibold text-gray-600">
+                <span>직접 등록하기 (예비 · 파일 다운로드)</span><span>{showManual ? '접기 ▲' : '펼치기 ▼'}</span>
+              </button>
+            </div>
+
+            {showManual && (<>
             <div className="bg-white rounded-2xl border p-5">
               <p className="text-sm font-bold text-orange-600 mb-3">STEP 2 · 업로드 파일 받기</p>
               <button onClick={download} disabled={!canExport} className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-40 text-white font-bold py-3.5 rounded-xl text-lg">
@@ -266,6 +345,8 @@ export default function AdminShipping() {
               </button>
               <p className="text-xs text-gray-400 mt-2">홈과 이 화면에 {monthLabel(month)} 등록 완료로 표시돼요.</p>
             </div>
+
+            </>)}
 
             {toast && <div className="bg-gray-900 text-white text-sm rounded-xl px-4 py-2 text-center">{toast}</div>}
           </div>
