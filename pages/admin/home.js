@@ -19,7 +19,7 @@ export default function AdminHome() {
   const router = useRouter()
   const [month, setMonth] = useAdminMonth()
   const [loading, setLoading] = useState(true)
-  const [data, setData] = useState({ roster: [], applied: [], items: [], assigns: [], deadline: '', settingsMonth: '' })
+  const [data, setData] = useState({ roster: [], applied: [], items: [], assigns: [], deadline: '', settingsMonth: '', erp: null })
   const loadedFor = useRef('')
 
   useEffect(() => {
@@ -45,6 +45,7 @@ export default function AdminHome() {
       assigns: assignRes.data || [],
       deadline: settingsRes.data?.find(r => r.key === 'deadline')?.value || '',
       settingsMonth: settingsRes.data?.find(r => r.key === 'current_month')?.value || '',
+      erp: (() => { try { return JSON.parse(settingsRes.data?.find(r => r.key === `erp_registered_${m}`)?.value || 'null') } catch { return null } })(),
     })
     setLoading(false)
   }
@@ -52,7 +53,7 @@ export default function AdminHome() {
   if (authLoading) return <div className="min-h-screen bg-gray-50 flex items-center justify-center"><p className="text-gray-400">로딩 중...</p></div>
   if (!session) return null
 
-  const { roster, applied, items, assigns, deadline, settingsMonth } = data
+  const { roster, applied, items, assigns, deadline, settingsMonth, erp } = data
   const appliedSet = new Set(applied)
   const adPeople = new Set(assigns.map(a => a.real_name))
   const notApplied = roster.filter(n => !appliedSet.has(n))
@@ -88,7 +89,7 @@ export default function AdminHome() {
             <StatCards items={[
               { label: '무상제품 신청', value: `${applied.length} / ${roster.length}`, unit: '명', color: notApplied.length ? 'text-gray-900' : 'text-green-600', sub: notApplied.length ? `미신청 ${notApplied.length}명` : '모두 신청 완료', onClick: () => go('/admin?tab=applications') },
               { label: '광고제품 배정', value: `${adPeople.size} / ${roster.length}`, unit: '명', color: 'text-orange-600', sub: `광고제품 ${items.length}개`, onClick: () => go('/admin/ads?tab=assign') },
-              { label: '광고 가이드', value: items.length, unit: '개', sub: items.length ? '가이드 발송 목록 보기' : '광고제품을 등록하세요', onClick: () => go(items.length ? '/admin/ads?tab=send' : '/admin/ads') },
+              { label: 'ERP 출고', value: erp ? '등록 완료' : '미등록', color: erp ? 'text-green-600' : 'text-gray-900', sub: erp ? `발송일 ${erp.date} · ${erp.people}명` : 'ERP 출고 파일 만들기', onClick: () => go('/admin/shipping') },
               { label: '신청 마감', value: !isOpenMonth ? '-' : dl === null ? '미설정' : dl < 0 ? '마감' : dl === 0 ? 'D-DAY' : `D-${dl}`, color: dl !== null && dl <= 3 && dl >= 0 ? 'text-red-500' : 'text-gray-900', sub: isOpenMonth && deadline ? deadline : '설정에서 변경', onClick: () => go('/admin?tab=settings') },
             ]} />
 
