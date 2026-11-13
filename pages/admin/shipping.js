@@ -285,6 +285,13 @@ export default function AdminShipping() {
                       <p>✓ ERP 로그인 · 제품 {autoState.summary.lines}행 모두 매칭</p>
                       <p className="text-gray-600">{autoState.summary.people}명 · {autoState.summary.lines}행 · {autoState.summary.qty}개 · 발송일 <b>{autoState.shipDate}</b></p>
                       <p className="text-gray-600 break-keep">메모: {autoState.memo}</p>
+                      {autoState.excluded?.length > 0 && (
+                        <div className="text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2 mt-1">
+                          <p className="font-semibold">이미 ERP에 등록된 {autoState.excluded.length}명은 제외했어요</p>
+                          <p className="text-xs mt-0.5 break-keep">{autoState.excluded.map(e => e.name).join(', ')}</p>
+                          <p className="text-xs text-amber-700/80 mt-0.5">({[...new Set(autoState.excluded.map(e => e.orderNumber))].join(', ')})</p>
+                        </div>
+                      )}
                       {autoState.duplicate && <p className="text-amber-700 font-semibold">⚠️ 이번 달 등록 기록이 이미 있어요 {autoState.duplicate.erp?.orderNumber ? `(${autoState.duplicate.erp.orderNumber})` : ''}</p>}
                     </div>
                   )}
