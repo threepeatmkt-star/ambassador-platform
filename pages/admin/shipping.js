@@ -275,6 +275,7 @@ export default function AdminShipping() {
                   {autoState.phase === 'error' && (
                     <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-3 text-sm text-red-600">
                       {autoState.error}
+                      {/연결되지|권한/.test(autoState.error || '') && <a href="/admin?tab=settings" className="block mt-2 font-semibold underline">설정 › ERP 연결로 이동</a>}
                       {Array.isArray(autoState.detail) && autoState.detail.slice(0, 8).map((d, i) => <div key={i} className="text-xs mt-1">· {d.receiver || d.name} {d.sku || d.product} {d.problem || ''}</div>)}
                     </div>
                   )}

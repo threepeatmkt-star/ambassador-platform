@@ -20,6 +20,11 @@ export default function AdminDashboard() {
   const [settingsMonth, setSettingsMonth] = useState('') // 앰버서더 신청 페이지의 신청 월
   const [search, setSearch] = useState('')
   const [rowFilter, setRowFilter] = useState('all') // all | notApplied | noAd
+  const [erpStatus, setErpStatus] = useState(null) // { configured, erp_id_masked, updated_at }
+  const [erpIdInput, setErpIdInput] = useState('')
+  const [erpPwInput, setErpPwInput] = useState('')
+  const [erpMsg, setErpMsg] = useState('')
+  const [erpBusy, setErpBusy] = useState(false)
   const [deadline, setDeadline] = useState('')
   const [deadlineInput, setDeadlineInput] = useState('')
   const [loading, setLoading] = useState(true)
@@ -38,6 +43,42 @@ export default function AdminDashboard() {
   useEffect(() => {
     if (session) loadData()
   }, [session])
+
+  // 설정 탭: ERP 연결 상태
+  useEffect(() => {
+    if (session && tab === 'settings') loadErpStatus()
+  }, [session, tab])
+
+  async function loadErpStatus() {
+    const { data, error } = await supabase.rpc('erp_credentials_status')
+    if (error) { setErpStatus({ error: error.message }); return }
+    setErpStatus(data?.[0] || { configured: false })
+  }
+
+  async function saveErpCredentials() {
+    if (!erpIdInput.trim()) { setErpMsg('ERP 아이디를 입력해주세요.'); return }
+    if (!erpPwInput && !erpStatus?.configured) { setErpMsg('비밀번호를 입력해주세요.'); return }
+    setErpBusy(true); setErpMsg('')
+    const { error } = await supabase.rpc('set_erp_credentials', { p_id: erpIdInput.trim(), p_password: erpPwInput })
+    setErpPwInput('')
+    if (error) { setErpBusy(false); setErpMsg('저장 실패: ' + error.message); return }
+    await loadErpStatus()
+    setErpBusy(false)
+    await testErpConnection('저장했어요. ')
+  }
+
+  async function testErpConnection(prefix = '') {
+    setErpBusy(true); setErpMsg(prefix + 'ERP 로그인 확인 중…')
+    const { data } = await supabase.auth.getSession()
+    const res = await fetch('/api/erp/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data?.session?.access_token}` },
+      body: JSON.stringify({ mode: 'login' }),
+    })
+    const j = await res.json().catch(() => ({}))
+    setErpBusy(false)
+    setErpMsg(j.ok ? `${prefix}✓ ERP 연결 성공 (제품 ${j.products?.toLocaleString?.() || j.products}개 확인)` : `${prefix}✗ ${j.error || 'ERP 연결 실패'}`)
+  }
 
   // 기준 월이 정해지거나 바뀌면 그 달 신청·광고 배정 불러오기
   useEffect(() => {
@@ -351,8 +392,30 @@ export default function AdminDashboard() {
         {/* ===== 설정 탭 ===== */}
         {tab === 'settings' && (
           <div>
-          <PageHeader title="설정" desc="앰버서더 신청 페이지의 신청 월·마감일과 매월 루틴" />
+          <PageHeader title="설정" desc="앰버서더 신청 페이지의 신청 월·마감일, ERP 연결, 매월 루틴" />
           <div className="max-w-2xl space-y-6">
+            <div className="bg-white rounded-xl border-2 border-orange-200 p-6">
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="font-semibold text-gray-900">ERP 연결 (자동 등록용)</h3>
+                {erpStatus && !erpStatus.error && (
+                  <span className={`text-sm font-semibold rounded-full px-3 py-1 ${erpStatus.configured ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                    {erpStatus.configured ? `연결됨 · ${erpStatus.erp_id_masked}` : '미연결'}
+                  </span>
+                )}
+              </div>
+              <p className="text-gray-500 text-sm mb-4">ERP 출고 화면의 [ERP에 바로 등록]에 쓰는 오아 ERP 계정이에요. 암호화해서 저장되고, 화면에는 다시 보이지 않아요.</p>
+              {erpStatus?.error && <p className="text-sm text-red-500 mb-3">{erpStatus.error}</p>}
+              <div className="space-y-3">
+                <input value={erpIdInput} onChange={e => setErpIdInput(e.target.value)} placeholder="ERP 아이디 (이메일)" autoComplete="off" className="w-full border rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-orange-400" />
+                <input type="password" value={erpPwInput} onChange={e => setErpPwInput(e.target.value)} placeholder={erpStatus?.configured ? '비밀번호 (바꿀 때만 입력)' : 'ERP 비밀번호'} autoComplete="new-password" className="w-full border rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-orange-400" />
+                <div className="flex gap-2">
+                  <button onClick={saveErpCredentials} disabled={erpBusy} className="flex-1 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-semibold">저장하고 연결 확인</button>
+                  {erpStatus?.configured && <button onClick={() => testErpConnection()} disabled={erpBusy} className="border rounded-lg px-4 py-2.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50">연결 확인만</button>}
+                </div>
+                {erpMsg && <p className={`text-sm ${erpMsg.includes('✗') || erpMsg.includes('실패') ? 'text-red-500' : 'text-gray-600'}`}>{erpMsg}</p>}
+              </div>
+            </div>
+
             <div className="bg-white rounded-xl border p-6">
               <h3 className="font-semibold text-gray-900 mb-4">신청 마감일 설정</h3>
               <div className="flex gap-3">
