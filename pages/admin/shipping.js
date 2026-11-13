@@ -238,7 +238,12 @@ export default function AdminShipping() {
               <a href={ERP_URL} target="_blank" rel="noreferrer" className="block text-center border-2 border-orange-400 text-orange-600 hover:bg-orange-50 rounded-xl py-3 font-bold mb-4">
                 오아 ERP 배송 주문 열기 ↗
               </a>
-              <p className="text-xs text-gray-500 mb-2">[등록] 누른 뒤 아래 값으로 입력 → 엑셀 파일 업로드 → 메모 추가 → [등록]</p>
+              <ol className="text-xs text-gray-600 mb-3 space-y-0.5 list-decimal list-inside">
+                <li>ERP에서 <b>[등록]</b> → 아래 기본 정보 입력</li>
+                <li>엑셀 파일 업로드 칸 옆 <b className="text-orange-600">[기본값]</b> 먼저 누르기</li>
+                <li>다운로드한 파일 올리기 → 배송지 {people}곳 생성 확인</li>
+                <li>메모 [추가] → 메모 붙여넣기 → <b>[등록]</b></li>
+              </ol>
               <table className="w-full text-sm">
                 <tbody>
                   {basicInfo.map(([k, v, copy]) => (
