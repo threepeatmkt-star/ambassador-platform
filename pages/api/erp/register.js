@@ -27,6 +27,22 @@ export default async function handler(req, res) {
   if (userErr || !userData?.user) return res.status(401).json({ error: '관리자 로그인이 만료됐어요. 다시 로그인해주세요.' })
 
   const { month, shipDate, types = ['free', 'ad'], message = '', skipIssues = false, mode = 'check', force = false } = req.body || {}
+
+  // 저장된 ERP 계정 (관리자만 꺼낼 수 있음)
+  const { data: credRows, error: credErr } = await supabase.rpc('get_erp_credentials')
+  if (credErr) return res.status(403).json({ error: 'ERP 계정을 불러올 권한이 없어요: ' + credErr.message })
+  const creds = { id: credRows?.[0]?.erp_id || '', password: credRows?.[0]?.erp_password || '' }
+
+  // 연결 테스트: ERP 로그인만 해보고 끝 (아무것도 등록 안 함)
+  if (mode === 'login') {
+    try {
+      const t = await erpLogin(creds)
+      const map = await erpProductMap(t)
+      return res.status(200).json({ ok: true, mode: 'login', products: Object.keys(map).length })
+    } catch (e) {
+      return res.status(400).json({ error: e.message || String(e) })
+    }
+  }
   if (!/^\d{4}-\d{2}$/.test(month || '')) return res.status(400).json({ error: '기준 월이 올바르지 않아요.' })
   if (!/^\d{4}-\d{2}-\d{2}$/.test(shipDate || '')) return res.status(400).json({ error: '발송일을 선택해주세요.' })
 
@@ -56,7 +72,7 @@ export default async function handler(req, res) {
     const already = regRes.data?.[0]?.value ? JSON.parse(regRes.data[0].value) : null
 
     // 4) ERP 로그인 · 제품 매칭
-    const token = await erpLogin()
+    const token = await erpLogin(creds)
     const productMap = await erpProductMap(token)
     const { payload, unknown, summary } = buildErpPayload(useRows, productMap, { shipDate, memo })
     if (unknown.length) return res.status(400).json({ error: `ERP에서 찾을 수 없는 전산명 ${unknown.length}건`, unknown })
