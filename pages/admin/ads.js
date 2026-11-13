@@ -5,6 +5,9 @@ import { formatGuide, parseGuide, toLatestFormat, emptyItem, guideWarnings, mont
 import Head from 'next/head'
 import Link from 'next/link'
 import AdminNav from '../../components/AdminNav'
+import PageHeader, { StatCards } from '../../components/PageHeader'
+import { useAdminMonth, monthLabel } from '../../lib/useAdminMonth'
+import { useRouter } from 'next/router'
 import * as XLSX from 'xlsx'
 
 function monthOptions() {
@@ -38,7 +41,9 @@ async function copyText(text) {
 
 export default function AdminAds() {
   const { session, loading: authLoading, logout } = useAdminAuth()
-  const [month, setMonth] = useState('')
+  const [month, setMonth] = useAdminMonth() // 상단 '기준 월' (모든 화면 공통)
+  const router = useRouter()
+  const [assignFilter, setAssignFilter] = useState('all') // all | noAd | notApplied
   const [tab, setTab] = useState('items') // items | assign | send
   const [products, setProducts] = useState([])
   const [ambassadors, setAmbassadors] = useState([])
@@ -66,17 +71,31 @@ export default function AdminAds() {
   }, [session])
 
   async function init() {
-    const [settingsRes, productsRes, ambRes] = await Promise.all([
-      supabase.from('settings').select('key,value'),
+    const [productsRes, ambRes] = await Promise.all([
       supabase.from('products').select('id, name, sku, category1, category2, is_active').order('category1,category2,name'),
       supabase.from('ambassadors').select('real_name, instagram'),
     ])
     setProducts(productsRes.data || [])
     setAmbassadors((ambRes.data || []).sort((a, b) => a.real_name.localeCompare(b.real_name, 'ko')))
-    const m = settingsRes.data?.find(r => r.key === 'current_month')?.value || monthOptions()[2]
-    setMonth(m)
-    await loadMonth(m)
   }
+
+  // 기준 월이 정해지거나 바뀌면 그 달 광고제품·배정 불러오기
+  const loadedMonth = useRef('')
+  useEffect(() => {
+    if (session && month && loadedMonth.current !== month) {
+      loadedMonth.current = month
+      loadMonth(month)
+    }
+  }, [session, month])
+
+  // 홈에서 넘어올 때 탭·필터 (/admin/ads?tab=assign&filter=noAd)
+  useEffect(() => {
+    if (!router.isReady) return
+    const t = router.query.tab
+    if (t === 'items' || t === 'assign' || t === 'send') setTab(t)
+    const f = router.query.filter
+    if (f === 'noAd' || f === 'notApplied') setAssignFilter(f)
+  }, [router.isReady, router.query.tab, router.query.filter])
 
   async function loadMonth(m) {
     setLoading(true)
@@ -109,9 +128,7 @@ export default function AdminAds() {
   const dirty = false // 배정은 고르는 즉시 자동 저장
 
   function changeMonth(m) {
-    if (dirty && !confirm('저장하지 않은 배정 변경사항이 있어요. 이동할까요?')) return
     setMonth(m)
-    loadMonth(m)
   }
 
   // ───────── 광고제품(가이드) 편집 ─────────
@@ -229,7 +246,15 @@ export default function AdminAds() {
   const rosterNames = new Set(ambassadors.map(a => a.real_name))
   const extraNames = [...new Set(Object.keys(assign).map(k => k.split('|')[0]))].filter(n => !rosterNames.has(n))
   const people = [...ambassadors.map(a => a.real_name), ...extraNames]
-  const visiblePeople = people.filter(n => !nameFilter || n.includes(nameFilter.trim()))
+  const hasAd = n => items.some(i => assign[`${n}|${i.id}`])
+  const visiblePeople = people.filter(n => {
+    if (nameFilter && !n.includes(nameFilter.trim())) return false
+    if (assignFilter === 'noAd' && hasAd(n)) return false
+    if (assignFilter === 'notApplied' && appliedNames.has(n)) return false
+    return true
+  })
+  const countNoAd = people.filter(n => !hasAd(n)).length
+  const countNotApplied = people.filter(n => !appliedNames.has(n)).length
 
   // 칸을 바꾸면 그 사람·그 광고제품 배정을 즉시 DB에 저장
   function rowsFor(name, item, value) {
@@ -364,21 +389,33 @@ export default function AdminAds() {
     <div className="min-h-screen bg-gray-50">
       <Head><title>광고제품 · 가이드 | 삼대오백 앰버서더 허브</title></Head>
 
-      <AdminNav active="ads" onLogout={logout} />
+      <AdminNav active="ads" onLogout={logout} month={month} onMonthChange={changeMonth} />
 
       <div className="max-w-7xl mx-auto px-8 py-8">
-        {/* 월 선택 + 탭 */}
-        <div className="bg-white rounded-xl border p-4 mb-5 flex flex-wrap items-center gap-3">
-          <select value={month} onChange={e => changeMonth(e.target.value)} className="border rounded-lg px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-orange-400">
-            {monthOptions().map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
-            {[['items', `광고제품 · 가이드 (${items.length})`], ['assign', '사람별 배정'], ['send', '가이드 발송 목록']].map(([k, l]) => (
-              <button key={k} onClick={() => setTab(k)} className={`px-4 py-1.5 rounded-md text-sm font-medium ${tab === k ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>{l}</button>
+        <PageHeader
+          title="광고제품 · 가이드"
+          desc={`${monthLabel(month)} 광고제품 ${items.length}개 · 사람별로 배정하고 가이드를 보내세요`}
+          actions={<>
+            <button onClick={copyPrevMonth} className="border bg-white rounded-xl px-4 py-2.5 text-gray-700 hover:bg-gray-50 font-medium">지난달 광고제품 불러오기</button>
+            <button onClick={openNew} className="bg-orange-500 hover:bg-orange-600 text-white font-semibold px-5 py-2.5 rounded-xl">+ 광고제품 추가</button>
+          </>}
+        />
+
+        <StatCards items={[
+          { label: '광고제품', value: items.length, unit: '개', onClick: () => setTab('items') },
+          { label: '광고 배정', value: `${people.filter(hasAd).length} / ${ambassadors.length}`, unit: '명', color: 'text-orange-600', onClick: () => { setTab('assign'); setAssignFilter('all') } },
+          { label: '광고 미배정', value: countNoAd, unit: '명', color: countNoAd ? 'text-red-500' : 'text-green-600', onClick: () => { setTab('assign'); setAssignFilter('noAd') } },
+          { label: '무상 미신청', value: countNotApplied, unit: '명', onClick: () => { setTab('assign'); setAssignFilter('notApplied') } },
+        ]} />
+
+        <div className="flex flex-wrap items-center gap-3 mb-5">
+          <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
+            {[['items', `광고제품 · 가이드 ${items.length}`], ['assign', '사람별 배정'], ['send', '가이드 발송 목록']].map(([k, l]) => (
+              <button key={k} onClick={() => setTab(k)} className={`px-5 py-2 rounded-lg font-semibold ${tab === k ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>{l}</button>
             ))}
           </div>
           <div className="flex-1" />
-          {msg && <span className="text-xs text-gray-500 max-w-md">{msg}</span>}
+          {msg && <span className="text-sm text-gray-500 max-w-md">{msg}</span>}
         </div>
 
         {loading ? (
@@ -388,13 +425,6 @@ export default function AdminAds() {
             {/* ===== 광고제품 · 가이드 ===== */}
             {tab === 'items' && (
               <div>
-                <div className="flex items-center justify-between mb-4">
-                  <p className="text-sm text-gray-500">{monthNumber(month)}월 광고제품을 등록하고 가이드를 작성하세요. 가이드 1개 = 광고제품 1개(또는 세트)입니다.</p>
-                  <div className="flex gap-2">
-                    <button onClick={copyPrevMonth} className="border rounded-lg px-3 py-2 text-xs text-gray-600 hover:bg-gray-50">지난달 광고제품 불러오기</button>
-                    <button onClick={openNew} className="bg-orange-500 hover:bg-orange-600 text-white font-semibold px-4 py-2 rounded-lg text-sm">+ 광고제품 추가</button>
-                  </div>
-                </div>
 
                 {items.length === 0 ? (
                   <div className="bg-white rounded-xl border p-12 text-center text-gray-400 text-sm">
@@ -442,15 +472,17 @@ export default function AdminAds() {
                 ) : (
                   <>
                     <div className="flex flex-wrap items-center gap-3 mb-3">
-                      <input value={nameFilter} onChange={e => setNameFilter(e.target.value)} placeholder="이름 검색" className="border rounded-lg px-3 py-2 text-sm w-40 focus:outline-none focus:ring-2 focus:ring-orange-400" />
-                      <p className="text-xs text-gray-400">칸마다 광고제품을 고르면 바로 저장되고 [가이드 발송 목록]·[신청 현황 엑셀]에 반영돼요.</p>
+                      <input value={nameFilter} onChange={e => setNameFilter(e.target.value)} placeholder="이름 검색" className="border rounded-xl px-4 py-2.5 w-48 focus:outline-none focus:ring-2 focus:ring-orange-400" />
+                      {[['all', `전체 ${people.length}`], ['noAd', `광고 미배정만 ${countNoAd}`], ['notApplied', `무상 미신청만 ${countNotApplied}`]].map(([k, l]) => (
+                        <button key={k} onClick={() => setAssignFilter(k)} className={`px-4 py-2 rounded-full text-sm font-semibold ${assignFilter === k ? 'bg-gray-900 text-white' : 'bg-white border text-gray-600 hover:border-gray-400'}`}>{l}</button>
+                      ))}
                       <div className="flex-1" />
                       <span className={`text-xs font-medium px-3 py-1.5 rounded-lg ${saveState === 'error' ? 'bg-red-50 text-red-600' : saveState === 'saving' ? 'bg-orange-50 text-orange-600' : 'bg-green-50 text-green-700'}`}>
                         {saveState === 'saving' ? '저장 중…' : saveState === 'error' ? '저장 실패 - 새로고침 필요' : '✓ 고르는 즉시 자동 저장'}
                       </span>
                     </div>
                     <div className="bg-white rounded-xl border overflow-hidden">
-                      <div className="overflow-auto max-h-[72vh]">
+                      <div className="overflow-auto max-h-[70vh]">
                         <table className="text-sm min-w-full">
                           <thead className="sticky top-0 z-10 bg-gray-50">
                             <tr className="border-b">
@@ -475,7 +507,7 @@ export default function AdminAds() {
                                   </div>
                                 </th>
                               ))}
-                              <th className="px-3 py-2 text-left text-xs text-gray-500 font-medium">광고</th>
+                              <th className="px-3 py-2 text-left text-xs text-gray-500 font-medium whitespace-nowrap">광고 수</th>
                             </tr>
                           </thead>
                           <tbody>

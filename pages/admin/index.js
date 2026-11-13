@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/router'
 import AdminNav from '../../components/AdminNav'
+import PageHeader, { StatCards } from '../../components/PageHeader'
+import { useAdminMonth, monthLabel } from '../../lib/useAdminMonth'
 import Link from 'next/link'
 import { supabase } from '../../lib/supabase'
 import { useAdminAuth } from '../../lib/useAdminAuth'
@@ -14,7 +16,10 @@ export default function AdminDashboard() {
 
   const [applications, setApplications] = useState([])
   const [ambassadors, setAmbassadors] = useState([])
-  const [currentMonth, setCurrentMonth] = useState('')
+  const [currentMonth, setCurrentMonth] = useAdminMonth() // 상단 '기준 월' (모든 화면 공통)
+  const [settingsMonth, setSettingsMonth] = useState('') // 앰버서더 신청 페이지의 신청 월
+  const [search, setSearch] = useState('')
+  const [rowFilter, setRowFilter] = useState('all') // all | notApplied | noAd
   const [deadline, setDeadline] = useState('')
   const [deadlineInput, setDeadlineInput] = useState('')
   const [loading, setLoading] = useState(true)
@@ -34,49 +39,37 @@ export default function AdminDashboard() {
     if (session) loadData()
   }, [session])
 
-  // 상단 메뉴(/admin?tab=...)로 탭 이동
+  // 기준 월이 정해지거나 바뀌면 그 달 신청·광고 배정 불러오기
   useEffect(() => {
+    if (session && currentMonth) loadMonthData(currentMonth).then(() => setLoading(false))
+  }, [session, currentMonth])
+
+  // 상단 메뉴(/admin?tab=...)로 탭 이동, 탭 없이 /admin 으로 오면 홈으로
+  useEffect(() => {
+    if (!router.isReady) return
     const q = router.query.tab
     if (q === 'applications' || q === 'ambassadors' || q === 'settings') setTab(q)
-  }, [router.query.tab])
+    else router.replace('/admin/home')
+    const f = router.query.filter
+    if (f === 'notApplied' || f === 'noAd') setRowFilter(f)
+  }, [router.isReady, router.query.tab, router.query.filter])
 
   async function loadData() {
-    setLoading(true)
     const [settingsRes, ambassadorsRes] = await Promise.all([
       supabase.from('settings').select('key,value'),
       supabase.from('ambassadors').select('*'),
     ])
-
-    let month = ''
     if (settingsRes.data) {
       const dl = settingsRes.data.find(r => r.key === 'deadline')?.value || ''
-      month = settingsRes.data.find(r => r.key === 'current_month')?.value || ''
+      const month = settingsRes.data.find(r => r.key === 'current_month')?.value || ''
       const ul = settingsRes.data.find(r => r.key === 'last_ambassador_upload')?.value || ''
       if (ul) setLastUploaded(ul)
       setDeadline(dl)
       setDeadlineInput(dl)
-      setCurrentMonth(month)
+      setSettingsMonth(month)
       setNewMonth(month)
     }
-
     if (ambassadorsRes.data) setAmbassadors(ambassadorsRes.data)
-
-    if (month) {
-      const { data: apps } = await supabase
-        .from('applications')
-        .select(`
-          id, month, real_name, submitted_at,
-          product1:products!applications_product1_id_fkey(id, name, sku),
-          product2:products!applications_product2_id_fkey(id, name, sku)
-        `)
-        .eq('month', month)
-        .order('submitted_at', { ascending: false })
-      if (apps) setApplications(apps)
-      const { data: ads } = await fetchAdAssignments(supabase, month)
-      setAdAssignments(ads)
-    }
-
-    setLoading(false)
   }
 
   async function loadMonthData(month) {
@@ -123,9 +116,9 @@ export default function AdminDashboard() {
 
   async function saveMonth() {
     await supabase.from('settings').upsert({ key: 'current_month', value: newMonth })
+    setSettingsMonth(newMonth)
     setCurrentMonth(newMonth)
-    await loadMonthData(newMonth)
-    alert(`${newMonth}월로 변경되었습니다.`)
+    alert(`신청 월이 ${newMonth}로 변경되었습니다. 상단 기준 월도 ${newMonth}로 바뀌었어요.`)
   }
 
   function getAmbassadorInfo(realName) {
@@ -201,210 +194,165 @@ export default function AdminDashboard() {
     await loadMonthData(currentMonth)
   }
 
-  const displayApplications = filterMode === 'range' ? rangeApplications : applications
-  const submittedCount = displayApplications.length
+  const isRange = filterMode === 'range'
+  const displayApplications = isRange ? rangeApplications : applications
+  const displayAds = isRange ? rangeAdAssignments : adAssignments
+  const submittedCount = applications.length
   const totalCount = ambassadors.length
-  const notSubmitted = ambassadors.filter(a => !applications.find(app => app.real_name === a.real_name))
+  const adNames = new Set(adAssignments.map(a => a.real_name))
+  const notSubmittedCount = ambassadors.filter(a => !applications.find(app => app.real_name === a.real_name)).length
+
+  // 표 한 줄 = 앰버서더 1명 (신청자 + 기준 월 보기에서는 미신청자도 회색으로)
+  const appRows = displayApplications.map(app => ({ name: app.real_name, app }))
+  const missingRows = isRange ? [] : ambassadors
+    .filter(a => !applications.find(app => app.real_name === a.real_name))
+    .map(a => ({ name: a.real_name, app: null }))
+  const q = search.trim().toLowerCase()
+  const rows = [...appRows, ...missingRows].filter(r => {
+    if (rowFilter === 'notApplied' && r.app) return false
+    if (rowFilter === 'noAd' && displayAds.some(a => a.real_name === r.name)) return false
+    if (!q) return true
+    const amb = getAmbassadorInfo(r.name)
+    return r.name.toLowerCase().includes(q) || String(amb.instagram || '').toLowerCase().includes(q)
+  })
+  const countNotApplied = isRange ? 0 : missingRows.length
+  const countNoAd = [...appRows, ...missingRows].filter(r => !displayAds.some(a => a.real_name === r.name)).length
 
   if (authLoading) {
-    return <div className="min-h-screen bg-gray-50 flex items-center justify-center"><p className="text-gray-400 text-sm">로딩 중...</p></div>
+    return <div className="min-h-screen bg-gray-50 flex items-center justify-center"><p className="text-gray-400">로딩 중...</p></div>
   }
 
   if (!session) return null
+
+  const input = 'border rounded-xl px-4 py-2.5 text-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-400'
+  const chip = on => `px-4 py-2 rounded-full text-sm font-semibold transition ${on ? 'bg-gray-900 text-white' : 'bg-white border text-gray-600 hover:border-gray-400'}`
 
   return (
     <div className="min-h-screen bg-gray-50">
       <Head><title>어드민 | 삼대오백 앰버서더</title></Head>
 
-      <AdminNav active={tab} onLogout={logout} />
+      <AdminNav active={tab} onLogout={logout} month={currentMonth} onMonthChange={m => { setFilterMode('month'); setCurrentMonth(m) }} />
 
       <div className="max-w-7xl mx-auto px-8 py-8">
 
-        {/* ===== 신청 현황 탭 ===== */}
+        {/* ===== 신청 현황 ===== */}
         {tab === 'applications' && (
           <div>
-            {/* 통계 카드 */}
-            <div className="grid grid-cols-3 gap-4 mb-6">
-              {[
-                ['신청 완료', submittedCount, 'text-green-600'],
-                ['미신청', totalCount - submittedCount, 'text-red-500'],
-                ['전체 앰버서더', totalCount, 'text-gray-900'],
-              ].map(([label, value, color]) => (
-                <div key={label} className="bg-white rounded-xl border p-5">
-                  <p className="text-gray-500 text-xs mb-1">{label}</p>
-                  <p className={`text-3xl font-bold ${color}`}>{value}<span className="text-base font-normal text-gray-400 ml-1">명</span></p>
-                </div>
-              ))}
-            </div>
-
-            {/* 필터 모드 탭 + 엑셀 다운로드 */}
-            <div className="bg-white rounded-xl border p-4 mb-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
-                  <button
-                    onClick={() => setFilterMode('month')}
-                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${filterMode === 'month' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                  >
-                    월별
-                  </button>
-                  <button
-                    onClick={() => setFilterMode('range')}
-                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${filterMode === 'range' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                  >
-                    기간설정
-                  </button>
-                </div>
-                <button
-                  onClick={exportExcel}
-                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-semibold px-4 py-2 rounded-lg text-sm"
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
+            <PageHeader
+              title="신청 현황"
+              desc={isRange ? `${dateFrom || '시작일'} ~ ${dateTo || '종료일'} 신청 내역` : `${monthLabel(currentMonth)} · 앰버서더별 무상제품 신청과 광고제품 배정`}
+              actions={
+                <button onClick={exportExcel} className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-semibold px-5 py-2.5 rounded-xl">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                   엑셀 다운로드
                 </button>
+              }
+            />
+
+            {!isRange && (
+              <StatCards items={[
+                { label: '무상 신청 완료', value: submittedCount, unit: '명', color: 'text-green-600', onClick: () => setRowFilter('all') },
+                { label: '무상 미신청', value: notSubmittedCount, unit: '명', color: notSubmittedCount ? 'text-red-500' : 'text-gray-900', onClick: () => setRowFilter('notApplied') },
+                { label: '광고제품 배정', value: adNames.size, unit: '명', color: 'text-orange-600', onClick: () => setRowFilter('all') },
+                { label: '전체 앰버서더', value: totalCount, unit: '명' },
+              ]} />
+            )}
+
+            {/* 보기 방식 · 검색 · 필터 */}
+            <div className="bg-white rounded-2xl border p-5 mb-4 space-y-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
+                  <button onClick={() => setFilterMode('month')} className={`px-4 py-2 rounded-lg font-semibold ${!isRange ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>기준 월</button>
+                  <button onClick={() => setFilterMode('range')} className={`px-4 py-2 rounded-lg font-semibold ${isRange ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>기간 설정</button>
+                </div>
+                {!isRange ? (
+                  <span className="text-gray-500">상단 <b className="text-orange-600">기준 월 {monthLabel(currentMonth)}</b> 내역을 보고 있어요</span>
+                ) : (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className={input} />
+                    <span className="text-gray-400">~</span>
+                    <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className={input} />
+                    <button onClick={() => loadRangeData(dateFrom, dateTo)} disabled={!dateFrom || !dateTo} className="bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white font-semibold px-5 py-2.5 rounded-xl">조회</button>
+                  </div>
+                )}
               </div>
-
-              {filterMode === 'month' && (
-                <div className="flex items-center gap-2">
-                  <select
-                    value={currentMonth}
-                    onChange={e => { setCurrentMonth(e.target.value); loadMonthData(e.target.value) }}
-                    className="border rounded-lg px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-orange-400"
-                  >
-                    {Array.from({ length: 15 }, (_, i) => {
-                      const d = new Date()
-                      d.setMonth(d.getMonth() - 12 + i + 1)
-                      const val = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-                      return <option key={val} value={val}>{val}</option>
-                    }).reverse()}
-                  </select>
-                  <span className="text-gray-400 text-sm">기준으로 조회</span>
-                </div>
-              )}
-
-              {filterMode === 'range' && (
-                <div className="flex items-center gap-2 flex-wrap">
-                  <input
-                    type="date"
-                    value={dateFrom}
-                    onChange={e => setDateFrom(e.target.value)}
-                    className="border rounded-lg px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-orange-400"
-                  />
-                  <span className="text-gray-400 text-sm">~</span>
-                  <input
-                    type="date"
-                    value={dateTo}
-                    onChange={e => setDateTo(e.target.value)}
-                    className="border rounded-lg px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-orange-400"
-                  />
-                  <button
-                    onClick={() => loadRangeData(dateFrom, dateTo)}
-                    disabled={!dateFrom || !dateTo}
-                    className="bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white font-semibold px-4 py-2 rounded-lg text-sm"
-                  >
-                    조회
-                  </button>
-                  {rangeApplications.length > 0 && (
-                    <span className="text-gray-400 text-xs">{rangeApplications.length}건 조회됨</span>
-                  )}
-                </div>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <input value={search} onChange={e => setSearch(e.target.value)} placeholder="이름 · 인스타그램 검색" className={`${input} w-64`} />
+                <button onClick={() => setRowFilter('all')} className={chip(rowFilter === 'all')}>전체</button>
+                {!isRange && <button onClick={() => setRowFilter('notApplied')} className={chip(rowFilter === 'notApplied')}>무상 미신청만 {countNotApplied}</button>}
+                <button onClick={() => setRowFilter('noAd')} className={chip(rowFilter === 'noAd')}>광고 미배정만 {countNoAd}</button>
+                <span className="text-sm text-gray-400 ml-auto">{rows.length}명 표시</span>
+              </div>
             </div>
 
             {(loading || rangeLoading) ? (
               <div className="text-center py-16 text-gray-400">불러오는 중...</div>
+            ) : isRange && !rangeApplications.length && !(dateFrom && dateTo) ? (
+              <div className="bg-white rounded-2xl border text-center py-14 text-gray-400">조회 기간을 정하고 [조회]를 눌러주세요.</div>
             ) : (
-              <>
-                {/* 신청 완료 목록 */}
-                {filterMode === 'range' && !dateFrom && !dateTo && (
-                  <div className="text-center py-12 text-gray-400">
-                    <p className="text-sm">조회 기간을 설정하고 조회 버튼을 눌러주세요.</p>
-                  </div>
-                )}
-                {(filterMode === 'month' || (filterMode === 'range' && (dateFrom || dateTo))) && (
-                  <div className="bg-white rounded-xl border overflow-hidden mb-6">
-                    <div className="px-5 py-3 bg-gray-50 border-b flex items-center justify-between">
-                      <h3 className="font-semibold text-gray-700 text-sm">신청 완료 ({submittedCount}명)</h3>
-                    </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b bg-gray-50/50">
-                            <th className="px-4 py-3 text-left text-gray-500 font-medium">본명</th>
-                            <th className="px-4 py-3 text-left text-gray-500 font-medium">무상제품 1</th>
-                            <th className="px-4 py-3 text-left text-gray-500 font-medium">무상제품 2</th>
-                            <th className="px-4 py-3 text-left text-gray-500 font-medium">광고제품</th>
-                            <th className="px-4 py-3 text-left text-gray-500 font-medium">연락처</th>
-                            <th className="px-4 py-3 text-left text-gray-500 font-medium">신청일시</th>
-                            <th className="px-4 py-3 text-left text-gray-500 font-medium"></th>
+              <div className="bg-white rounded-2xl border overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b bg-gray-50 text-sm">
+                        <th className="px-5 py-3 text-left text-gray-500 font-semibold">앰버서더</th>
+                        <th className="px-5 py-3 text-left text-gray-500 font-semibold min-w-[200px]">무상제품 1</th>
+                        <th className="px-5 py-3 text-left text-gray-500 font-semibold min-w-[200px]">무상제품 2</th>
+                        <th className="px-5 py-3 text-left text-orange-600 font-semibold min-w-[240px]">광고제품</th>
+                        <th className="px-5 py-3 text-left text-gray-500 font-semibold">연락처</th>
+                        <th className="px-5 py-3 text-left text-gray-500 font-semibold whitespace-nowrap">신청일시</th>
+                        <th className="px-5 py-3"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(({ name, app }) => {
+                        const amb = getAmbassadorInfo(name)
+                        const ads = displayAds.filter(a => a.real_name === name)
+                        return (
+                          <tr key={app?.id || 'x-' + name} className={`border-b last:border-b-0 ${app ? '' : 'bg-gray-50/70'}`}>
+                            <td className="px-5 py-3.5 whitespace-nowrap">
+                              <p className={`font-semibold ${app ? 'text-gray-900' : 'text-gray-400'}`}>{name}</p>
+                              {amb.instagram && <p className="text-xs text-gray-400">@{amb.instagram}</p>}
+                            </td>
+                            {app ? (
+                              [app.product1, app.product2].map((p, j) => (
+                                <td key={j} className="px-5 py-3.5 text-gray-800 text-[0.95rem] leading-snug">
+                                  <div>{p?.name}</div>
+                                  {p?.sku && <div className="text-xs text-gray-400 mt-0.5">{p.sku}</div>}
+                                </td>
+                              ))
+                            ) : (
+                              <td colSpan={2} className="px-5 py-3.5"><span className="text-sm font-semibold text-red-500 bg-red-50 rounded-full px-3 py-1">무상 미신청</span></td>
+                            )}
+                            <td className="px-5 py-3.5 text-[0.95rem] leading-snug">
+                              {ads.length ? ads.map((a, j) => <div key={j} className="text-orange-700">{a.product?.name || a.product_name}{a.quantity > 1 ? ` ×${a.quantity}` : ''}</div>) : <span className="text-sm text-gray-300">-</span>}
+                            </td>
+                            <td className="px-5 py-3.5 text-gray-500 text-sm whitespace-nowrap">{amb.phone || '-'}</td>
+                            <td className="px-5 py-3.5 text-gray-400 text-sm whitespace-nowrap">{app ? new Date(app.submitted_at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</td>
+                            <td className="px-5 py-3.5 text-right">
+                              {app && !isRange && (
+                                <button onClick={() => handleCancel(app)} className="text-sm text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 rounded-lg px-3 py-1.5 whitespace-nowrap">신청 취소</button>
+                              )}
+                            </td>
                           </tr>
-                        </thead>
-                        <tbody>
-                          {(filterMode === 'range' ? rangeApplications : applications).map((app, i) => {
-                            const amb = getAmbassadorInfo(app.real_name)
-                            return (
-                              <tr key={app.id} className={`border-b last:border-b-0 ${i % 2 === 0 ? '' : 'bg-gray-50/30'}`}>
-                                <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{app.real_name}</td>
-                                <td className="px-4 py-3 text-gray-700">
-                                  <div>{app.product1?.name}</div>
-                                  {app.product1?.sku && <div className="text-xs text-gray-400">{app.product1.sku}</div>}
-                                </td>
-                                <td className="px-4 py-3 text-gray-700">
-                                  <div>{app.product2?.name}</div>
-                                  {app.product2?.sku && <div className="text-xs text-gray-400">{app.product2.sku}</div>}
-                                </td>
-                                <td className="px-4 py-3 text-gray-700">
-                                  {(filterMode === 'range' ? rangeAdAssignments : adAssignments).filter(a => a.real_name === app.real_name).map((a, j) => (
-                                    <div key={j} className="text-orange-700">{a.product?.name || a.product_name}</div>
-                                  ))}
-                                </td>
-                                <td className="px-4 py-3 text-gray-500">{amb.phone || '-'}</td>
-                                <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">{new Date(app.submitted_at).toLocaleString('ko-KR')}</td>
-                                <td className="px-4 py-3">
-                                  <button onClick={() => handleCancel(app)} className="text-xs text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 rounded-lg px-3 py-1.5 transition-colors whitespace-nowrap">
-                                    신청 취소
-                                  </button>
-                                </td>
-                              </tr>
-                            )
-                          })}
-                          {(filterMode === 'range' ? rangeApplications : applications).length === 0 && (
-                            <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">신청 내역이 없습니다.</td></tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* 미신청 목록 */}
-                {notSubmitted.length > 0 && (
-                  <div className="bg-white rounded-xl border overflow-hidden">
-                    <div className="px-5 py-3 bg-red-50 border-b">
-                      <h3 className="font-semibold text-red-600 text-sm">미신청 ({notSubmitted.length}명)</h3>
-                    </div>
-                    <div className="divide-y">
-                      {notSubmitted.map(amb => (
-                        <div key={amb.id} className="px-5 py-3 flex items-center justify-between">
-                          <div>
-                            <span className="font-medium text-gray-700 text-sm">{amb.real_name}</span>
-                            {amb.instagram && <span className="text-gray-400 text-xs ml-2">@{amb.instagram}</span>}
-                          </div>
-                          <span className="text-xs text-gray-400">{amb.phone}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </>
+                        )
+                      })}
+                      {rows.length === 0 && (
+                        <tr><td colSpan={7} className="px-5 py-12 text-center text-gray-400">조건에 맞는 앰버서더가 없어요.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             )}
           </div>
         )}
 
         {/* ===== 설정 탭 ===== */}
         {tab === 'settings' && (
-          <div className="max-w-md space-y-6">
+          <div>
+          <PageHeader title="설정" desc="앰버서더 신청 페이지의 신청 월·마감일과 매월 루틴" />
+          <div className="max-w-2xl space-y-6">
             <div className="bg-white rounded-xl border p-6">
               <h3 className="font-semibold text-gray-900 mb-4">신청 마감일 설정</h3>
               <div className="flex gap-3">
@@ -442,7 +390,7 @@ export default function AdminDashboard() {
                   변경
                 </button>
               </div>
-              {currentMonth && <p className="mt-2 text-gray-400 text-xs">현재: {currentMonth}</p>}
+              {settingsMonth && <p className="mt-2 text-gray-500 text-sm">현재 신청 월: <b>{settingsMonth}</b></p>}
             </div>
 
             <div className="bg-white rounded-xl border p-6">
@@ -481,28 +429,22 @@ export default function AdminDashboard() {
               </div>
             </div>
           </div>
+          </div>
         )}
 
         {/* ===== 앰버서더 명단 탭 ===== */}
         {tab === 'ambassadors' && (
           <div>
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <p className="text-gray-700 text-sm font-medium">총 {ambassadors.length}명</p>
-                {lastUploaded && (
-                  <p className="text-gray-400 text-xs mt-0.5">최신 업데이트일: {new Date(lastUploaded).toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
-                )}
-              </div>
-              <a
-                href="/admin/ambassadors-upload"
-                className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white font-semibold px-4 py-2 rounded-lg text-sm transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                </svg>
-                엑셀로 업로드
-              </a>
-            </div>
+            <PageHeader
+              title="앰버서더 명단"
+              desc={`총 ${ambassadors.length}명${lastUploaded ? ` · 최신 업데이트 ${new Date(lastUploaded).toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })}` : ''}`}
+              actions={
+                <a href="/admin/ambassadors-upload" className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white font-semibold px-5 py-2.5 rounded-xl">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                  엑셀로 업로드
+                </a>
+              }
+            />
             <div className="bg-white rounded-xl border overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
