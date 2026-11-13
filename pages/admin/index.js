@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase'
 import { useAdminAuth } from '../../lib/useAdminAuth'
 import Head from 'next/head'
 import * as XLSX from 'xlsx'
+import { groupByAmbassador, buildErpRows, makeErpSheet, fetchAdAssignments, monthsBetween } from '../../lib/erp'
 
 export default function AdminDashboard() {
   const { session, loading: authLoading, logout } = useAdminAuth()
@@ -23,6 +24,8 @@ export default function AdminDashboard() {
   const [dateTo, setDateTo] = useState('')
   const [rangeApplications, setRangeApplications] = useState([])
   const [rangeLoading, setRangeLoading] = useState(false)
+  const [adAssignments, setAdAssignments] = useState([])
+  const [rangeAdAssignments, setRangeAdAssignments] = useState([])
 
   useEffect(() => {
     if (session) loadData()
@@ -60,6 +63,8 @@ export default function AdminDashboard() {
         .eq('month', month)
         .order('submitted_at', { ascending: false })
       if (apps) setApplications(apps)
+      const { data: ads } = await fetchAdAssignments(supabase, month)
+      setAdAssignments(ads)
     }
 
     setLoading(false)
@@ -76,6 +81,8 @@ export default function AdminDashboard() {
       .eq('month', month)
       .order('submitted_at', { ascending: false })
     if (apps) setApplications(apps)
+    const { data: ads } = await fetchAdAssignments(supabase, month)
+    setAdAssignments(ads)
   }
 
   async function loadRangeData(from, to) {
@@ -92,6 +99,8 @@ export default function AdminDashboard() {
       .lte('submitted_at', to + 'T23:59:59')
       .order('submitted_at', { ascending: false })
     if (apps) setRangeApplications(apps)
+    const { data: ads } = await fetchAdAssignments(supabase, monthsBetween(from, to))
+    setRangeAdAssignments(ads)
     setRangeLoading(false)
   }
 
@@ -116,100 +125,64 @@ export default function AdminDashboard() {
 
   function exportExcel() {
     const targetApps = filterMode === 'range' ? rangeApplications : applications
+    const targetAds = filterMode === 'range' ? rangeAdAssignments : adAssignments
     const label = filterMode === 'range' ? `${dateFrom}~${dateTo}` : currentMonth
+    const groups = groupByAmbassador([...targetApps].reverse(), targetAds)
+    const byName = new Map(groups.map(g => [g.name, g]))
+    const appByName = new Map(targetApps.map(a => [a.real_name, a]))
+    const join = (list, key) => list.map(x => x[key]).filter(Boolean).join('\n')
 
-    // ── 시트1: 신청내역 ──────────────────────────────
-    const rows = targetApps.map(app => {
-      const amb = getAmbassadorInfo(app.real_name)
+    // ── 시트1: 신청내역 (앰버서더별 무상 + 광고) ──
+    const names = [...groups.map(g => g.name), ...ambassadors.map(a => a.real_name).filter(n => !byName.has(n))]
+    const rows = names.map(name => {
+      const amb = getAmbassadorInfo(name)
+      const g = byName.get(name) || { free: [], ad: [] }
+      const app = appByName.get(name)
       return {
         '인스타그램': amb.instagram ? `@${amb.instagram}` : '',
-        '본명': app.real_name,
+        '본명': name,
         '연락처': amb.phone || '',
         '우편번호': amb.zipcode || '',
         '주소': amb.address || '',
-        '무상제품1': app.product1?.name || '',
-        '무상제품1 전산명': app.product1?.sku || '',
-        '무상제품2': app.product2?.name || '',
-        '무상제품2 전산명': app.product2?.sku || '',
-        '신청일시': new Date(app.submitted_at).toLocaleString('ko-KR'),
+        '무상제품1': app ? (app.product1?.name || '') : '미신청',
+        '무상제품1 전산명': app?.product1?.sku?.trim() || '',
+        '무상제품2': app ? (app.product2?.name || '') : '미신청',
+        '무상제품2 전산명': app?.product2?.sku?.trim() || '',
+        '광고제품': join(g.ad, 'name'),
+        '광고제품 전산명': join(g.ad, 'sku'),
+        '광고 가이드': [...new Set(g.ad.map(p => p.item_title).filter(Boolean))].join('\n'),
+        '신청일시': app ? new Date(app.submitted_at).toLocaleString('ko-KR') : '',
       }
     })
 
-    // 미신청 앰버서더도 추가
-    const submittedNames = new Set(targetApps.map(a => a.real_name))
-    ambassadors.forEach(amb => {
-      if (!submittedNames.has(amb.real_name)) {
-        rows.push({
-          '인스타그램': amb.instagram ? `@${amb.instagram}` : '',
-          '본명': amb.real_name,
-          '연락처': amb.phone || '',
-          '우편번호': amb.zipcode || '',
-          '주소': amb.address || '',
-          '무상제품1': '미신청',
-          '무상제품1 전산명': '',
-          '무상제품2': '미신청',
-          '무상제품2 전산명': '',
-          '신청일시': '',
-        })
-      }
-    })
+    // ── 시트2: ERP 배송주문 (오아 ERP 업로드 양식 그대로, 제품 1개 = 1행, 무상+광고) ──
+    const { rows: erpRows } = buildErpRows(groups, ambassadors)
 
-    // ── 시트2: ERP 배송주문 양식 (신청완료 건만, 제품별 행 분리) ──
-    const erpRows = []
-    targetApps.forEach(app => {
-      const amb = getAmbassadorInfo(app.real_name)
-      if (app.product1?.sku) {
-        erpRows.push({
-          '주문제품': app.product1.sku,
-          '수량': 1,
-          '수령인': app.real_name,
-          '연락처': amb.phone || '',
-          '우편번호': amb.zipcode || '',
-          '주소': amb.address || '',
-        })
-      }
-      if (app.product2?.sku) {
-        erpRows.push({
-          '주문제품': app.product2.sku,
-          '수량': 1,
-          '수령인': app.real_name,
-          '연락처': amb.phone || '',
-          '우편번호': amb.zipcode || '',
-          '주소': amb.address || '',
-        })
-      }
-    })
-
-    // ── 시트3: 요약VER (반복 브랜드명 제거 + 두 제품 한 셀 합치기) ──
+    // ── 시트3: 요약VER (반복 브랜드명 제거) ──
     const stripBrand = (name) => {
       if (!name) return ''
-      // 제거할 반복 브랜드명 목록
       return name
         .replace(/삼대오백/g, '')
         .replace(/SAMDAE500/gi, '')
         .trim()
     }
-
-    const summaryRows = targetApps.map(app => {
-      const amb = getAmbassadorInfo(app.real_name)
-      const p1 = stripBrand(app.product1?.name)
-      const p2 = stripBrand(app.product2?.name)
-      const combined = [p1, p2].filter(Boolean).join(', ')
+    const summaryRows = groups.map(g => {
+      const amb = getAmbassadorInfo(g.name)
       return {
         '인스타그램': amb.instagram ? `@${amb.instagram}` : '',
-        '본명': app.real_name,
-        '무상제품 (2개)': combined,
+        '본명': g.name,
+        '무상제품 (2개)': g.free.map(p => stripBrand(p.name)).filter(Boolean).join(', ') || '미신청',
+        '광고제품': g.ad.map(p => stripBrand(p.name)).filter(Boolean).join(', '),
       }
     })
 
     const wb = XLSX.utils.book_new()
     const ws1 = XLSX.utils.json_to_sheet(rows)
-    const ws2 = XLSX.utils.json_to_sheet(erpRows)
-    const ws3 = XLSX.utils.json_to_sheet(summaryRows)
+    ws1['!cols'] = [14, 8, 13, 8, 50, 30, 26, 30, 26, 32, 30, 34, 20].map(wch => ({ wch }))
     XLSX.utils.book_append_sheet(wb, ws1, '신청내역')
-    XLSX.utils.book_append_sheet(wb, ws2, 'ERP 배송주문')
-    XLSX.utils.book_append_sheet(wb, ws3, '요약VER')
-    XLSX.writeFile(wb, `삼대오백_앰버서더_${label}_무상제품신청.xlsx`)
+    XLSX.utils.book_append_sheet(wb, makeErpSheet(XLSX, erpRows), 'ERP 배송주문')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), '요약VER')
+    XLSX.writeFile(wb, `삼대오백_앰버서더_${label}_무상+광고제품.xlsx`)
   }
 
   async function handleCancel(app) {
@@ -269,6 +242,12 @@ export default function AdminDashboard() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
             </svg>
             제품 DB 관리
+          </Link>
+          <Link
+            href="/admin/ads"
+            className="px-4 py-3 text-sm font-medium border-b-2 border-transparent text-orange-500 hover:text-orange-600 flex items-center gap-1.5 transition-colors"
+          >
+            광고제품 · 가이드
           </Link>
         </div>
       </div>
@@ -389,6 +368,7 @@ export default function AdminDashboard() {
                             <th className="px-4 py-3 text-left text-gray-500 font-medium">본명</th>
                             <th className="px-4 py-3 text-left text-gray-500 font-medium">무상제품 1</th>
                             <th className="px-4 py-3 text-left text-gray-500 font-medium">무상제품 2</th>
+                            <th className="px-4 py-3 text-left text-gray-500 font-medium">광고제품</th>
                             <th className="px-4 py-3 text-left text-gray-500 font-medium">연락처</th>
                             <th className="px-4 py-3 text-left text-gray-500 font-medium">신청일시</th>
                             <th className="px-4 py-3 text-left text-gray-500 font-medium"></th>
@@ -408,6 +388,11 @@ export default function AdminDashboard() {
                                   <div>{app.product2?.name}</div>
                                   {app.product2?.sku && <div className="text-xs text-gray-400">{app.product2.sku}</div>}
                                 </td>
+                                <td className="px-4 py-3 text-gray-700">
+                                  {(filterMode === 'range' ? rangeAdAssignments : adAssignments).filter(a => a.real_name === app.real_name).map((a, j) => (
+                                    <div key={j} className="text-orange-700">{a.product?.name || a.product_name}</div>
+                                  ))}
+                                </td>
                                 <td className="px-4 py-3 text-gray-500">{amb.phone || '-'}</td>
                                 <td className="px-4 py-3 text-gray-400 text-xs">{new Date(app.submitted_at).toLocaleString('ko-KR')}</td>
                                 <td className="px-4 py-3">
@@ -419,7 +404,7 @@ export default function AdminDashboard() {
                             )
                           })}
                           {(filterMode === 'range' ? rangeApplications : applications).length === 0 && (
-                            <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">신청 내역이 없습니다.</td></tr>
+                            <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">신청 내역이 없습니다.</td></tr>
                           )}
                         </tbody>
                       </table>
