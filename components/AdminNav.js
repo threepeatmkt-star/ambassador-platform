@@ -1,11 +1,12 @@
 import Link from 'next/link'
 import { monthOptions } from '../lib/useAdminMonth'
 
-// 관리자 공통 상단 메뉴: 홈 > 광고제품 · 가이드 > 신청 현황 > 앰버서더 명단 > 제품 DB 관리 > 설정
+// 관리자 공통 상단 메뉴: 홈 > 광고제품 · 가이드 > 신청 현황 > ERP 출고 > 앰버서더 명단 > 제품 DB 관리 > 설정
 export const ADMIN_MENU = [
   { key: 'home', href: '/admin/home', label: '홈' },
   { key: 'ads', href: '/admin/ads', label: '광고제품 · 가이드' },
   { key: 'applications', href: '/admin?tab=applications', label: '신청 현황' },
+  { key: 'shipping', href: '/admin/shipping', label: 'ERP 출고' },
   { key: 'ambassadors', href: '/admin?tab=ambassadors', label: '앰버서더 명단' },
   { key: 'products', href: '/admin/products', label: '제품 DB 관리' },
   { key: 'settings', href: '/admin?tab=settings', label: '설정' },
