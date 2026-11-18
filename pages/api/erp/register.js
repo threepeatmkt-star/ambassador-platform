@@ -3,7 +3,7 @@
 // - check: ERP 로그인 · 제품 매칭 · 중복 확인까지만 (ERP에 아무것도 만들지 않음)
 // - register: 실제로 ERP 배송주문 등록
 import { createClient } from '@supabase/supabase-js'
-import { groupByAmbassador, buildErpRows, fetchAdAssignments } from '../../../lib/erp'
+import { groupByAmbassador, buildErpRows, fetchAdAssignments, erpMemo } from '../../../lib/erp'
 import { erpLogin, erpProductMap, buildErpPayload, erpCreateDeliveryOrder, erpFindOrderByMemo, erpMonthShipped, erpResolveApprovers, ERP_APPROVERS } from '../../../lib/erpApi'
 
 const APP_SELECT = `
@@ -45,6 +45,10 @@ export default async function handler(req, res) {
   }
   if (!/^\d{4}-\d{2}$/.test(month || '')) return res.status(400).json({ error: '기준 월이 올바르지 않아요.' })
   if (!/^\d{4}-\d{2}-\d{2}$/.test(shipDate || '')) return res.status(400).json({ error: '발송일을 선택해주세요.' })
+  // 신제품은 월간(무상+광고)과 섞지 않고 따로 등록
+  const isNew = Array.isArray(types) && types.includes('new')
+  const useTypes = isNew ? ['new'] : (Array.isArray(types) ? types : ['free', 'ad']).filter(t => t !== 'new')
+  const regKey = isNew ? `erp_registered_new_${month}` : `erp_registered_${month}`
 
   try {
     // 2) 이번 달 무상 신청 + 광고 배정 + 명단
@@ -52,13 +56,13 @@ export default async function handler(req, res) {
       supabase.from('applications').select(APP_SELECT).eq('month', month).order('submitted_at'),
       supabase.from('ambassadors').select('*'),
       fetchAdAssignments(supabase, month),
-      supabase.from('settings').select('key,value').eq('key', `erp_registered_${month}`),
+      supabase.from('settings').select('key,value').eq('key', regKey),
     ])
     if (appsRes.error) throw new Error('신청 내역 조회 실패: ' + appsRes.error.message)
     if (adsRes.error) throw new Error('광고 배정 조회 실패: ' + adsRes.error.message)
 
     const groups = groupByAmbassador(appsRes.data || [], adsRes.data || [])
-    const { rows, issues } = buildErpRows(groups, ambRes.data || [], { types, message: String(message).trim() })
+    const { rows, issues } = buildErpRows(groups, ambRes.data || [], { types: useTypes, message: String(message).trim() })
     const issueKeys = new Set(issues.map(i => i.key))
     if (issues.length && !skipIssues) return res.status(400).json({ error: `확인이 필요한 행 ${issues.length}건이 있어요.`, issues })
     const validRows = rows.filter(r => !issueKeys.has(r.key))
@@ -66,18 +70,21 @@ export default async function handler(req, res) {
 
     // 3) ERP 로그인 · 이번 달 이미 등록된 사람 제외 (중복 발송 방지)
     const token = await erpLogin(creds)
-    const shipped = await erpMonthShipped(token, month)
-    const excluded = [...new Set(validRows.map(r => r.values[2]).filter(n => shipped.names.has(n)))].map(n => ({ name: n, orderNumber: shipped.names.get(n) }))
-    const useRows = includeShipped ? validRows : validRows.filter(r => !shipped.names.has(r.values[2]))
-    if (!useRows.length) return res.status(400).json({ error: '이번 달 대상자가 모두 이미 ERP에 등록돼 있어요.', excluded, priorOrders: shipped.orders })
+    const productMap = await erpProductMap(token)
+    const shipped = await erpMonthShipped(token, month, { kind: isNew ? 'new' : 'monthly', productMap })
+    // 월간: 이번 달 이미 받은 사람 제외 / 신제품: 같은 제품을 이미 받은 행만 제외
+    const already_got = r => isNew
+      ? !!shipped.items.get(r.values[2])?.has(String(r.values[0]).trim())
+      : shipped.names.has(r.values[2])
+    const excluded = [...new Set(validRows.filter(already_got).map(r => r.values[2]))].map(n => ({ name: n, orderNumber: shipped.names.get(n) }))
+    const useRows = includeShipped ? validRows : validRows.filter(r => !already_got(r))
+    if (!useRows.length) return res.status(400).json({ error: isNew ? '대상자가 모두 이 신제품을 이미 받았어요.' : '이번 달 대상자가 모두 이미 ERP에 등록돼 있어요.', excluded, priorOrders: shipped.orders })
 
     const people = new Set(useRows.map(r => r.values[2])).size
-    const monthNum = Number(month.split('-')[1])
-    const memo = `삼대오백 ${monthNum}월 엠버서더 광고 및 무상제품 발송 (${people}명)`
+    const memo = erpMemo(month, useTypes, people, [...new Set(useRows.map(r => r.itemTitle))])
     const already = regRes.data?.[0]?.value ? JSON.parse(regRes.data[0].value) : null
 
-    // 4) 제품 매칭
-    const productMap = await erpProductMap(token)
+    // 4) 승인 담당자
     const pick = (Array.isArray(approverEmails) && approverEmails.length ? approverEmails : [ERP_APPROVERS[0].email])
       .filter(e => ERP_APPROVERS.some(a => a.email === e))
     if (!pick.length) return res.status(400).json({ error: '승인 담당자를 선택해주세요.' })
@@ -100,7 +107,7 @@ export default async function handler(req, res) {
     const result = await erpCreateDeliveryOrder(token, payload)
     const created = await erpFindOrderByMemo(token, memo).catch(() => null)
     const record = { date: shipDate, memo, rows: summary.lines, people: summary.people, qty: summary.qty, at: new Date().toISOString(), auto: true, orderNumber: created?.orderNumber || null, erpId: created?.id || null, excluded: excluded.length, approvers: approverNames }
-    await supabase.from('settings').upsert({ key: `erp_registered_${month}`, value: JSON.stringify(record) })
+    await supabase.from('settings').upsert({ key: regKey, value: JSON.stringify(record) })
     return res.status(200).json({ ok: true, mode: 'register', record, erp: result?.response_code ?? null })
   } catch (e) {
     return res.status(500).json({ error: e.message || String(e) })
