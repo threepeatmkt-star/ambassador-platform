@@ -40,13 +40,13 @@ export default function AdminShipping() {
   const [loadError, setLoadError] = useState('')
   const [shipDate, setShipDate] = useState(today())
   const [typeFilter, setTypeFilter] = useState('all') // all | free | ad | new(신제품, 따로 등록)
+  const [regs, setRegs] = useState({}) // { monthly: {date, memo, rows, people, at}, new: {...} }
   const regKind = typeFilter === 'new' ? 'new' : 'monthly'
   const registered = regs[regKind] || null
   const setRegistered = v => setRegs(r => ({ ...r, [regKind]: v }))
   const regKey = m => (typeFilter === 'new' ? `erp_registered_new_${m}` : `erp_registered_${m}`)
   const [message, setMessage] = useState('')
   const [skipIssues, setSkipIssues] = useState(false)
-  const [regs, setRegs] = useState({}) // { monthly: {date, memo, rows, people, at}, new: {...} }
   const [toast, setToast] = useState('')
   const [autoState, setAutoState] = useState({ phase: 'idle' }) // idle | checking | checked | registering | done | error
   const [showManual, setShowManual] = useState(false)
