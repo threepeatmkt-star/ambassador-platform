@@ -25,7 +25,7 @@ function prevMonth(month) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
-const ITEM_SELECT = 'id, month, title, pick_mode, links, topics, notices, selling_points, hashtags, sort_order, ad_item_products(product_id, quantity, sort_order, product:products(id, name, sku, is_active))'
+const ITEM_SELECT = 'id, month, kind, title, pick_mode, links, topics, notices, selling_points, hashtags, sort_order, ad_item_products(product_id, quantity, sort_order, product:products(id, name, sku, is_active))'
 
 function normalizeItem(row) {
   const products = (row.ad_item_products || [])
@@ -132,8 +132,8 @@ export default function AdminAds() {
   }
 
   // ───────── 광고제품(가이드) 편집 ─────────
-  function openNew() {
-    setEditor({ ...emptyItem(month), products: [], paste: '' })
+  function openNew(kind = 'ad') {
+    setEditor({ ...emptyItem(month), kind, products: [], paste: '' })
   }
 
   function openEdit(item) {
@@ -147,6 +147,7 @@ export default function AdminAds() {
     setSaving(true)
     const payload = {
       month,
+      kind: e.kind === 'new' ? 'new' : 'ad',
       title: e.title.trim(),
       pick_mode: e.pick_mode,
       links: e.links,
@@ -225,12 +226,12 @@ export default function AdminAds() {
     const { data, error } = await supabase.from('ad_items').select(ITEM_SELECT).eq('month', pm).order('sort_order')
     if (error || !data?.length) { alert(`${pm}에 등록된 광고제품이 없어요.`); return }
     const existing = new Set(items.map(i => i.title))
-    const src = data.map(normalizeItem).filter(i => !existing.has(i.title))
+    const src = data.map(normalizeItem).filter(i => !existing.has(i.title) && i.kind !== 'new') // 신제품은 매달 이어지지 않음
     if (!src.length) { alert('이미 모두 불러와져 있어요.'); return }
     if (!confirm(`${pm} 광고제품 ${src.length}개(가이드 포함)를 ${month}로 복사할까요?\n사람별 배정은 복사되지 않습니다.`)) return
     for (const [i, it] of src.entries()) {
       const { data: ins, error: e1 } = await supabase.from('ad_items').insert({
-        month, title: it.title, pick_mode: it.pick_mode, links: it.links, topics: it.topics,
+        month, kind: 'ad', title: it.title, pick_mode: it.pick_mode, links: it.links, topics: it.topics,
         notices: it.notices, selling_points: it.selling_points, hashtags: it.hashtags, sort_order: items.length + i,
       }).select().single()
       if (e1) { alert('복사 실패: ' + e1.message); break }
@@ -246,7 +247,9 @@ export default function AdminAds() {
   const rosterNames = new Set(ambassadors.map(a => a.real_name))
   const extraNames = [...new Set(Object.keys(assign).map(k => k.split('|')[0]))].filter(n => !rosterNames.has(n))
   const people = [...ambassadors.map(a => a.real_name), ...extraNames]
-  const hasAd = n => items.some(i => assign[`${n}|${i.id}`])
+  const hasAd = n => items.some(i => i.kind !== 'new' && assign[`${n}|${i.id}`])
+  const adItemCount = items.filter(i => i.kind !== 'new').length
+  const newItemCount = items.length - adItemCount
   const visiblePeople = people.filter(n => {
     if (nameFilter && !n.includes(nameFilter.trim())) return false
     if (assignFilter === 'noAd' && hasAd(n)) return false
@@ -368,6 +371,7 @@ export default function AdminAds() {
           '본명': n,
           '인스타그램': instaOf(n) ? `@${instaOf(n)}` : '',
           '무상 신청': appliedNames.has(n) ? 'O' : '미신청',
+          '유형': item.kind === 'new' ? '신제품' : '광고',
           '광고 가이드': item.title,
           '광고제품': p.name,
           '전산명': (p.sku || '').trim(),
@@ -394,15 +398,16 @@ export default function AdminAds() {
       <div className="max-w-7xl mx-auto px-8 py-8">
         <PageHeader
           title="광고제품 · 가이드"
-          desc={`${monthLabel(month)} 광고제품 ${items.length}개 · 사람별로 배정하고 가이드를 보내세요`}
+          desc={`${monthLabel(month)} 광고제품 ${adItemCount}개${newItemCount ? ` · 신제품 ${newItemCount}개` : ''} · 사람별로 배정하고 가이드를 보내세요`}
           actions={<>
             <button onClick={copyPrevMonth} className="border bg-white rounded-xl px-4 py-2.5 text-gray-700 hover:bg-gray-50 font-medium">지난달 광고제품 불러오기</button>
-            <button onClick={openNew} className="bg-orange-500 hover:bg-orange-600 text-white font-semibold px-5 py-2.5 rounded-xl">+ 광고제품 추가</button>
+            <button onClick={() => openNew('new')} className="border-2 border-blue-500 text-blue-600 bg-white hover:bg-blue-50 font-semibold px-5 py-2.5 rounded-xl">+ 신제품 발송</button>
+            <button onClick={() => openNew('ad')} className="bg-orange-500 hover:bg-orange-600 text-white font-semibold px-5 py-2.5 rounded-xl">+ 광고제품 추가</button>
           </>}
         />
 
         <StatCards items={[
-          { label: '광고제품', value: items.length, unit: '개', onClick: () => setTab('items') },
+          { label: newItemCount ? '광고제품 · 신제품' : '광고제품', value: newItemCount ? `${adItemCount} · ${newItemCount}` : adItemCount, unit: '개', onClick: () => setTab('items') },
           { label: '광고 배정', value: `${people.filter(hasAd).length} / ${ambassadors.length}`, unit: '명', color: 'text-orange-600', onClick: () => { setTab('assign'); setAssignFilter('all') } },
           { label: '광고 미배정', value: countNoAd, unit: '명', color: countNoAd ? 'text-red-500' : 'text-green-600', onClick: () => { setTab('assign'); setAssignFilter('noAd') } },
           { label: '무상 미신청', value: countNotApplied, unit: '명', onClick: () => { setTab('assign'); setAssignFilter('notApplied') } },
@@ -436,9 +441,9 @@ export default function AdminAds() {
                       const warns = guideWarnings(item)
                       const count = people.filter(n => savedAssign[`${n}|${item.id}`]).length
                       return (
-                        <div key={item.id} className="bg-white rounded-xl border p-5 flex flex-col">
+                        <div key={item.id} className={`bg-white rounded-xl border p-5 flex flex-col ${item.kind === 'new' ? 'border-blue-300 ring-1 ring-blue-100' : ''}`}>
                           <div className="flex items-start justify-between gap-2 mb-2">
-                            <p className="font-semibold text-gray-900 text-sm leading-snug">📦 {item.title}</p>
+                            <p className="font-semibold text-gray-900 text-sm leading-snug">{item.kind === 'new' && <span className="inline-block bg-blue-100 text-blue-700 text-[11px] font-bold rounded px-1.5 py-0.5 mr-1 align-middle">신제품</span>}📦 {item.title}</p>
                             <div className="flex gap-1 flex-shrink-0">
                               <button onClick={() => moveItem(item, -1)} disabled={idx === 0} className="text-gray-400 hover:text-gray-700 disabled:opacity-30 text-xs px-1">▲</button>
                               <button onClick={() => moveItem(item, 1)} disabled={idx === items.length - 1} className="text-gray-400 hover:text-gray-700 disabled:opacity-30 text-xs px-1">▼</button>
@@ -489,7 +494,7 @@ export default function AdminAds() {
                               <th className="px-3 py-2 text-left text-xs text-gray-500 font-medium">무상제품 (앰버서더 신청)</th>
                               {items.map(item => (
                                 <th key={item.id} className="px-3 py-2 text-left align-top min-w-[190px]">
-                                  <p className="text-xs text-gray-800 font-semibold leading-snug line-clamp-2">{item.title}</p>
+                                  <p className="text-xs text-gray-800 font-semibold leading-snug line-clamp-2">{item.kind === 'new' && <span className="inline-block bg-blue-100 text-blue-700 text-[11px] font-bold rounded px-1.5 py-0.5 mr-1 align-middle">신제품</span>}{item.title}</p>
                                   <div className="mt-1">
                                     {item.pick_mode === 'one' ? (
                                       <select value="" onChange={e => e.target.value && bulkColumn(item, e.target.value === '__none' ? null : e.target.value)} className="border rounded px-1 py-0.5 text-xs text-gray-500 w-full font-normal">
@@ -562,7 +567,7 @@ export default function AdminAds() {
                     <div key={item.id} className="bg-white rounded-xl border p-5">
                       <div className="flex items-start justify-between gap-3 mb-3">
                         <div>
-                          <p className="font-semibold text-gray-900 text-sm">📦 {item.title}</p>
+                          <p className="font-semibold text-gray-900 text-sm">{item.kind === 'new' && <span className="inline-block bg-blue-100 text-blue-700 text-[11px] font-bold rounded px-1.5 py-0.5 mr-1 align-middle">신제품</span>}📦 {item.title}</p>
                           <p className="text-xs text-gray-400 mt-0.5">받는 사람 {names.length}명</p>
                         </div>
                         <div className="flex gap-2 flex-shrink-0">
@@ -656,13 +661,25 @@ function ItemEditor({ editor, setEditor, products, library, month, saving, onSav
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl w-full max-w-6xl max-h-[92vh] flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b">
-          <h3 className="font-bold text-gray-900">{e.id ? '광고제품 수정' : '광고제품 추가'} <span className="text-gray-400 font-normal text-sm">· {month}</span></h3>
+          <h3 className="font-bold text-gray-900">{(e.kind === 'new' ? '신제품' : '광고제품') + (e.id ? ' 수정' : ' 추가')} <span className="text-gray-400 font-normal text-sm">· {month}</span></h3>
           <button onClick={() => setEditor(null)} className="text-gray-400 hover:text-gray-600">✕</button>
         </div>
 
         <div className="flex-1 overflow-y-auto grid lg:grid-cols-2 gap-6 p-6">
           {/* 입력 */}
           <div className="space-y-4">
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">유형</label>
+              <div className="grid grid-cols-2 gap-2">
+                {[['ad', '광고제품', '매달 보내는 광고 · 월간 출고에 같이'], ['new', '신제품', '출시 때 따로 보내는 시딩 · ERP 별도 등록']].map(([k, l, d]) => (
+                  <label key={k} className={`border-2 rounded-xl p-3 cursor-pointer ${(e.kind || 'ad') === k ? (k === 'new' ? 'border-blue-500 bg-blue-50' : 'border-orange-400 bg-orange-50') : 'border-gray-200'}`}>
+                    <input type="radio" checked={(e.kind || 'ad') === k} onChange={() => set({ kind: k })} className="mr-1.5 accent-orange-500" />
+                    <span className="text-sm font-medium text-gray-800">{l}</span>
+                    <p className="text-xs text-gray-400 mt-0.5">{d}</p>
+                  </label>
+                ))}
+              </div>
+            </div>
             {library.filter(i => i.id !== e.id).length > 0 && (
               <div className="bg-gray-50 border rounded-xl p-3">
                 <label className="text-xs font-semibold text-gray-600 mb-1 block">지난 가이드 보관함에서 불러오기</label>

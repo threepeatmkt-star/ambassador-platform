@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
 import { useAdminAuth } from '../../lib/useAdminAuth'
 import { useAdminMonth, monthLabel } from '../../lib/useAdminMonth'
-import { groupByAmbassador, buildErpRows, makeErpWorkbook, fetchAdAssignments, ERP_HEADERS, TYPE_LABEL } from '../../lib/erp'
+import { groupByAmbassador, buildErpRows, makeErpWorkbook, fetchAdAssignments, ERP_HEADERS, TYPE_LABEL, erpMemo } from '../../lib/erp'
 import AdminNav from '../../components/AdminNav'
 import PageHeader, { StatCards } from '../../components/PageHeader'
 
@@ -39,10 +39,14 @@ export default function AdminShipping() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [shipDate, setShipDate] = useState(today())
-  const [typeFilter, setTypeFilter] = useState('all') // all | free | ad
+  const [typeFilter, setTypeFilter] = useState('all') // all | free | ad | new(신제품, 따로 등록)
+  const regKind = typeFilter === 'new' ? 'new' : 'monthly'
+  const registered = regs[regKind] || null
+  const setRegistered = v => setRegs(r => ({ ...r, [regKind]: v }))
+  const regKey = m => (typeFilter === 'new' ? `erp_registered_new_${m}` : `erp_registered_${m}`)
   const [message, setMessage] = useState('')
   const [skipIssues, setSkipIssues] = useState(false)
-  const [registered, setRegistered] = useState(null) // { date, memo, rows, people, at }
+  const [regs, setRegs] = useState({}) // { monthly: {date, memo, rows, people, at}, new: {...} }
   const [toast, setToast] = useState('')
   const [autoState, setAutoState] = useState({ phase: 'idle' }) // idle | checking | checked | registering | done | error
   const [showManual, setShowManual] = useState(false)
@@ -63,18 +67,19 @@ export default function AdminShipping() {
       supabase.from('applications').select(APP_SELECT).eq('month', m).order('submitted_at'),
       supabase.from('ambassadors').select('*'),
       fetchAdAssignments(supabase, m),
-      supabase.from('settings').select('key,value').eq('key', `erp_registered_${m}`),
+      supabase.from('settings').select('key,value').in('key', [`erp_registered_${m}`, `erp_registered_new_${m}`]),
     ])
     if (appsRes.error) setLoadError('신청 내역을 불러오지 못했어요: ' + appsRes.error.message)
     setApplications(appsRes.data || [])
     setAmbassadors(ambRes.data || [])
     setAdAssignments(adsRes.data || [])
-    const reg = regRes.data?.[0]?.value
-    try { setRegistered(reg ? JSON.parse(reg) : null) } catch { setRegistered(null) }
+    const parse = k => { try { const v = regRes.data?.find(r => r.key === k)?.value; return v ? JSON.parse(v) : null } catch { return null } }
+    setRegs({ monthly: parse(`erp_registered_${m}`), new: parse(`erp_registered_new_${m}`) })
     setLoading(false)
   }
 
   const types = typeFilter === 'all' ? ['free', 'ad'] : [typeFilter]
+  const newCount = adAssignments.filter(a => a.item_kind === 'new').length
   const groups = groupByAmbassador(applications, adAssignments)
   const { rows, issues } = buildErpRows(groups, ambassadors, { types, message: message.trim() })
   const issueKeys = new Set(issues.map(i => i.key))
@@ -83,7 +88,7 @@ export default function AdminShipping() {
   const totalQty = exportRows.reduce((a, r) => a + (Number(r.values[1]) || 0), 0)
   const canExport = exportRows.length > 0 && (skipIssues || issues.length === 0)
   const monthNum = Number(String(month).split('-')[1] || 0)
-  const memo = `삼대오백 ${monthNum}월 엠버서더 광고 및 무상제품 발송 (${people}명)`
+  const memo = erpMemo(month, types, people, [...new Set(exportRows.map(r => r.itemTitle))])
 
   const basicInfo = [
     ['배송 주문 유형', '일반 배송'],
@@ -139,7 +144,7 @@ export default function AdminShipping() {
 
   async function markRegistered() {
     const value = { date: shipDate, memo, rows: exportRows.length, people, at: new Date().toISOString() }
-    const { error } = await supabase.from('settings').upsert({ key: `erp_registered_${month}`, value: JSON.stringify(value) })
+    const { error } = await supabase.from('settings').upsert({ key: regKey(month), value: JSON.stringify(value) })
     if (error) { alert('저장 실패: ' + error.message); return }
     setRegistered(value)
     flash('ERP 등록 완료로 표시했어요')
@@ -147,7 +152,7 @@ export default function AdminShipping() {
 
   async function unmarkRegistered() {
     if (!confirm('ERP 등록 완료 표시를 취소할까요?')) return
-    await supabase.from('settings').delete().eq('key', `erp_registered_${month}`)
+    await supabase.from('settings').delete().eq('key', regKey(month))
     setRegistered(null)
   }
 
@@ -169,7 +174,7 @@ export default function AdminShipping() {
 
         {registered && (
           <div className="bg-green-50 border border-green-200 rounded-2xl px-5 py-4 mb-6 flex flex-wrap items-center gap-3">
-            <span className="text-green-700 font-semibold">✓ {monthLabel(month)} ERP 등록 완료</span>
+            <span className="text-green-700 font-semibold">✓ {monthLabel(month)} {typeFilter === 'new' ? '신제품 ' : ''}ERP 등록 완료</span>
             <span className="text-green-700/80 text-sm">발송일 {registered.date} · {registered.people}명 · {registered.rows}행 · 표시 {new Date(registered.at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
             <button onClick={unmarkRegistered} className="ml-auto text-sm text-green-700 underline">표시 취소</button>
           </div>
@@ -187,8 +192,10 @@ export default function AdminShipping() {
           <div className="space-y-4 min-w-0">
             <div className="bg-white rounded-2xl border p-5 flex flex-wrap items-center gap-2">
               {[['all', '무상 + 광고'], ['free', '무상만'], ['ad', '광고만']].map(([k, l]) => (
-                <button key={k} onClick={() => setTypeFilter(k)} className={chip(typeFilter === k)}>{l}</button>
+                <button key={k} onClick={() => { setTypeFilter(k); setAutoState({ phase: 'idle' }) }} className={chip(typeFilter === k)}>{l}</button>
               ))}
+              <span className="w-px h-6 bg-gray-200 mx-1" />
+              <button onClick={() => { setTypeFilter('new'); setAutoState({ phase: 'idle' }) }} className={`px-4 py-2 rounded-full text-sm font-semibold ${typeFilter === 'new' ? 'bg-blue-600 text-white' : 'bg-white border border-blue-300 text-blue-700 hover:border-blue-500'}`}>신제품 (따로 등록){newCount ? ` ${newCount}` : ''}</button>
               <input value={message} onChange={e => setMessage(e.target.value)} placeholder="배송메시지 (선택 · 모든 행 동일)" className="flex-1 min-w-[220px] border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-orange-400" />
             </div>
 
@@ -239,7 +246,7 @@ export default function AdminShipping() {
                         return (
                           <tr key={r.key} className={`border-b last:border-0 ${bad ? 'bg-red-50/60' : ''} ${skipped ? 'opacity-40 line-through' : ''}`}>
                             <td className="px-3 py-1.5 whitespace-nowrap">
-                              <span className={`px-2 py-0.5 rounded text-xs font-semibold ${r.type === 'ad' ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-600'}`}>{TYPE_LABEL[r.type]}</span>
+                              <span className={`px-2 py-0.5 rounded text-xs font-semibold ${r.type === 'ad' ? 'bg-orange-100 text-orange-700' : r.type === 'new' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{TYPE_LABEL[r.type]}</span>
                             </td>
                             {r.values.map((v, i) => (
                               <td key={i} className={`px-3 py-1.5 text-gray-700 ${i === 5 ? 'min-w-[260px]' : 'whitespace-nowrap'}`}>{String(v ?? '')}</td>

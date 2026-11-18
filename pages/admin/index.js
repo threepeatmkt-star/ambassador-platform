@@ -194,6 +194,8 @@ export default function AdminDashboard() {
         '광고제품': join(g.ad, 'name'),
         '광고제품 전산명': join(g.ad, 'sku'),
         '광고 가이드': [...new Set(g.ad.map(p => p.item_title).filter(Boolean))].join('\n'),
+        '신제품': join(g.new, 'name'),
+        '신제품 전산명': join(g.new, 'sku'),
         '신청일시': app ? new Date(app.submitted_at).toLocaleString('ko-KR') : '',
       }
     })
@@ -216,6 +218,7 @@ export default function AdminDashboard() {
         '본명': g.name,
         '무상제품 (2개)': g.free.map(p => stripBrand(p.name)).filter(Boolean).join(', ') || '미신청',
         '광고제품': g.ad.map(p => stripBrand(p.name)).filter(Boolean).join(', '),
+        '신제품': g.new.map(p => stripBrand(p.name)).filter(Boolean).join(', '),
       }
     })
 
@@ -366,7 +369,7 @@ export default function AdminDashboard() {
                               <td colSpan={2} className="px-5 py-3.5"><span className="text-sm font-semibold text-red-500 bg-red-50 rounded-full px-3 py-1">무상 미신청</span></td>
                             )}
                             <td className="px-5 py-3.5 text-[0.95rem] leading-snug">
-                              {ads.length ? ads.map((a, j) => <div key={j} className="text-orange-700">{a.product?.name || a.product_name}{a.quantity > 1 ? ` ×${a.quantity}` : ''}</div>) : <span className="text-sm text-gray-300">-</span>}
+                              {ads.length ? ads.map((a, j) => <div key={j} className={a.item_kind === 'new' ? 'text-blue-700' : 'text-orange-700'}>{a.item_kind === 'new' && <span className="text-[11px] font-bold bg-blue-100 rounded px-1 mr-1">신제품</span>}{a.product?.name || a.product_name}{a.quantity > 1 ? ` ×${a.quantity}` : ''}</div>) : <span className="text-sm text-gray-300">-</span>}
                             </td>
                             <td className="px-5 py-3.5 text-gray-500 text-sm whitespace-nowrap">{amb.phone || '-'}</td>
                             <td className="px-5 py-3.5 text-gray-400 text-sm whitespace-nowrap">{app ? new Date(app.submitted_at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</td>
