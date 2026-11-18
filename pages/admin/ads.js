@@ -452,8 +452,7 @@ export default function AdminAds() {
                           </div>
                           {warns.length > 0 && <p className="text-xs text-amber-600 mb-3">⚠️ {warns.join(' · ')}</p>}
                           <div className="flex gap-2 mt-auto">
-                            <button onClick={async () => setMsg(await copyText(formatGuide(item, month)) ? `'${item.title}' 가이드를 복사했어요.` : '복사 실패')} className="flex-1 bg-gray-900 hover:bg-gray-700 text-white rounded-lg py-2 text-xs font-semibold">가이드 복사</button>
-                            <button onClick={() => openEdit(item)} className="flex-1 border rounded-lg py-2 text-xs text-gray-600 hover:bg-gray-50">수정</button>
+                            <button onClick={() => openEdit(item)} className="flex-1 bg-gray-900 hover:bg-gray-700 text-white rounded-lg py-2 text-xs font-semibold">가이드 보기 · 수정</button>
                             <button onClick={() => deleteItem(item)} className="border border-red-200 text-red-400 rounded-lg px-3 py-2 text-xs hover:bg-red-50">삭제</button>
                           </div>
                         </div>
