@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
 import { useAdminAuth } from '../../lib/useAdminAuth'
 import { useAdminMonth, monthLabel } from '../../lib/useAdminMonth'
-import { groupByAmbassador, buildErpRows, makeErpWorkbook, fetchAdAssignments, ERP_HEADERS, TYPE_LABEL, erpMemo } from '../../lib/erp'
+import { groupByAmbassador, buildErpRows, makeErpWorkbook, fetchAdAssignments, ERP_HEADERS, TYPE_LABEL, erpMemo, erpRowSkipId, isRowSkipped } from '../../lib/erp'
 import AdminNav from '../../components/AdminNav'
 import PageHeader, { StatCards } from '../../components/PageHeader'
 
@@ -49,7 +49,8 @@ export default function AdminShipping() {
   const [skipIssues, setSkipIssues] = useState(false)
   const [skips, setSkips] = useState({}) // { monthly: [이름], new: [이름] } 이번 발송에서 뺀 사람
   const [itemMap, setItemMap] = useState({}) // 이번 달 광고/신제품 아이템 (수정용 제품 목록)
-  const [editPerson, setEditPerson] = useState(null) // 이름
+  const [editPerson, setEditPerson] = useState(null) // 이름 (수정 창)
+  const [deleteTarget, setDeleteTarget] = useState(null) // 이름 (삭제 창)
   const [toast, setToast] = useState('')
   const [autoState, setAutoState] = useState({ phase: 'idle' }) // idle | checking | checked | registering | done | error
   const [showManual, setShowManual] = useState(false)
@@ -90,9 +91,11 @@ export default function AdminShipping() {
   const { rows, issues: rawIssues } = buildErpRows(groups, ambassadors, { types, message: message.trim() })
   const skipNames = skips[regKind] || []
   const skipSet = new Set(skipNames)
-  const issues = rawIssues.filter(i => !skipSet.has(i.name))
+  const skippedKeys = new Set(rows.filter(r => isRowSkipped(r, skipSet)).map(r => r.key))
+  const issues = rawIssues.filter(i => !skippedKeys.has(i.key))
   const issueKeys = new Set(issues.map(i => i.key))
-  const exportRows = (skipIssues ? rows.filter(r => !issueKeys.has(r.key)) : rows).filter(r => !skipSet.has(r.values[2]))
+  const exportRows = (skipIssues ? rows.filter(r => !issueKeys.has(r.key)) : rows).filter(r => !skippedKeys.has(r.key))
+  const peopleAllSkipped = [...new Set(rows.map(r => r.values[2]))].filter(n => rows.filter(r => r.values[2] === n).every(r => skippedKeys.has(r.key)))
   const firstRowOf = new Set()
   { const seen = new Set(); for (const r of rows) { if (!seen.has(r.values[2])) { seen.add(r.values[2]); firstRowOf.add(r.key) } } }
   const personCount = new Set(rows.map(r => r.values[2])).size
@@ -147,27 +150,39 @@ export default function AdminShipping() {
     setTimeout(() => setToast(''), 2000)
   }
 
-  // ── 인원별 관리: 이번 발송에서 빼기 / 수정 / 삭제 ──
-  async function toggleSkip(name) {
-    const next = skipSet.has(name) ? skipNames.filter(n => n !== name) : [...skipNames, name]
-    setSkips(s => ({ ...s, [regKind]: next }))
+  // ── 인원별 관리: 수정(수량 · 품목 빼기) / 삭제(제품만 · 인원) ──
+  // '빼기'는 이번 발송에서만 제외 (배정은 그대로), settings 에 저장 → [ERP에 바로 등록]도 똑같이 제외
+  async function saveSkips(next) {
+    const clean = [...new Set(next)]
+    setSkips(s => ({ ...s, [regKind]: clean }))
     setAutoState({ phase: 'idle' })
     const key = `erp_skip_${regKind}_${month}`
-    const { error } = next.length
-      ? await supabase.from('settings').upsert({ key, value: JSON.stringify(next) })
+    const { error } = clean.length
+      ? await supabase.from('settings').upsert({ key, value: JSON.stringify(clean) })
       : await supabase.from('settings').delete().eq('key', key)
-    if (error) { alert('저장 실패: ' + error.message); load(month) }
+    if (error) { alert('저장 실패: ' + error.message); load(month); return false }
+    return true
   }
 
-  async function deletePerson(name) {
-    const mine = rows.filter(r => r.values[2] === name && r.assignId)
-    if (!mine.length) { alert('무상제품은 앰버서더가 직접 신청한 거라 여기서 삭제할 수 없어요. [이번 발송에서 빼기]를 써주세요.'); return }
-    const label = typeFilter === 'new' ? '신제품' : '광고제품'
-    if (!confirm(`${name}님의 ${label} 배정 ${mine.length}건을 삭제할까요?\n(${mine.map(r => r.productName).join(', ')})\n\n사람별 배정에서도 지워져요.${mine.length < rows.filter(r => r.values[2] === name).length ? '\n무상제품은 그대로 남아요.' : ''}`)) return
-    const { error } = await supabase.from('ad_assignments').delete().in('id', mine.map(r => r.assignId))
-    if (error) { alert('삭제 실패: ' + error.message); return }
-    setAutoState({ phase: 'idle' })
-    flash(`${name}님 ${label} 배정을 삭제했어요`)
+  // 한 사람의 빼기 항목을 새로 지정 (그 사람 관련 기존 항목은 지움)
+  function skipsForPerson(name, rowIdsToSkip, wholePerson = false) {
+    const mineIds = new Set(rows.filter(r => r.values[2] === name).map(erpRowSkipId))
+    const others = skipNames.filter(x => x !== name && !mineIds.has(x))
+    return wholePerson ? [...others, name] : [...others, ...rowIdsToSkip]
+  }
+
+  async function deleteRows(name, targetRows, wholePerson) {
+    const assignIds = targetRows.filter(r => r.assignId).map(r => r.assignId)
+    if (assignIds.length) {
+      const { error } = await supabase.from('ad_assignments').delete().in('id', assignIds)
+      if (error) { alert('삭제 실패: ' + error.message); return }
+    }
+    // 무상(앰버서더 신청)은 지울 수 없으니 이번 발송에서 빼기로 처리
+    const freeIds = targetRows.filter(r => !r.assignId).map(erpRowSkipId)
+    const keep = skipNames.filter(x => !targetRows.some(r => erpRowSkipId(r) === x))
+    await saveSkips(wholePerson ? [...keep.filter(x => x !== name), name] : [...keep, ...freeIds])
+    setDeleteTarget(null)
+    flash(wholePerson ? `${name}님을 이번 발송에서 삭제했어요` : `${name}님 제품 ${targetRows.length}개를 삭제했어요`)
     load(month)
   }
 
@@ -261,7 +276,7 @@ export default function AdminShipping() {
 
             <div className="bg-white rounded-2xl border overflow-hidden">
               <div className="px-5 py-3 bg-gray-50 border-b flex items-center justify-between">
-                <p className="font-semibold text-gray-700">ERP 업로드 파일 미리보기 {skipNames.filter(n => rows.some(r => r.values[2] === n)).length > 0 && <span className="ml-2 text-sm font-normal text-gray-500">· {personCount}명 중 <b className="text-gray-700">{skipNames.filter(n => rows.some(r => r.values[2] === n)).length}명 이번 발송 제외</b></span>}</p>
+                <p className="font-semibold text-gray-700">ERP 업로드 파일 미리보기 {skippedKeys.size > 0 && <span className="ml-2 text-sm font-normal text-gray-500">· 이번 발송 제외 <b className="text-gray-700">{peopleAllSkipped.length ? `${peopleAllSkipped.length}명 · ` : ''}{skippedKeys.size}개</b></span>}</p>
                 <p className="text-xs text-gray-400">파일에는 아래 8개 열만 들어가요 (같은 사람 행은 붙어서)</p>
               </div>
               {loading ? (
@@ -279,11 +294,12 @@ export default function AdminShipping() {
                       {rows.map(r => {
                         const name = r.values[2]
                         const bad = issueKeys.has(r.key)
-                        const personSkipped = skipSet.has(name)
-                        const skipped = (bad && skipIssues) || personSkipped
+                        const rowSkipped = skippedKeys.has(r.key)
                         const first = firstRowOf.has(r.key)
                         const myRows = first ? rows.filter(x => x.values[2] === name) : []
-                        const canDelete = myRows.some(x => x.assignId)
+                        const mySkipped = myRows.filter(x => skippedKeys.has(x.key)).length
+                        const personSkipped = first && mySkipped === myRows.length
+                        const skipped = (bad && skipIssues) || rowSkipped
                         const btn = 'text-xs font-semibold rounded-md px-2.5 py-1 border bg-white'
                         return (
                           <Fragment key={r.key}>
@@ -293,19 +309,16 @@ export default function AdminShipping() {
                                   <div className="flex items-center gap-2 sticky left-3 w-fit">
                                     <span className={`font-bold ${personSkipped ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{name}</span>
                                     <span className="text-xs text-gray-400 mr-2">제품 {myRows.length}개</span>
-                                    {personSkipped ? (<>
-                                      <span className="text-xs bg-gray-200 text-gray-600 rounded-full px-2 py-0.5">이번 발송 제외</span>
-                                      <button onClick={() => toggleSkip(name)} className={`${btn} border-green-300 text-green-700 hover:bg-green-50`}>다시 넣기</button>
-                                    </>) : (<>
-                                      <button onClick={() => toggleSkip(name)} className={`${btn} text-gray-600 hover:bg-gray-100`} title="이번 ERP 등록에서만 빼요 (배정은 그대로)">빼기</button>
-                                      <button onClick={() => setEditPerson(name)} className={`${btn} text-gray-600 hover:bg-gray-100`}>수정</button>
-                                      {canDelete && <button onClick={() => deletePerson(name)} className={`${btn} border-red-200 text-red-500 hover:bg-red-50`} title="광고·신제품 배정 삭제">삭제</button>}
-                                    </>)}
+                                    {personSkipped
+                                      ? <span className="text-xs bg-gray-200 text-gray-600 rounded-full px-2 py-0.5">이번 발송 제외</span>
+                                      : mySkipped > 0 && <span className="text-xs bg-amber-100 text-amber-700 rounded-full px-2 py-0.5">{mySkipped}개 빠짐</span>}
+                                    <button onClick={() => setEditPerson(name)} className={`${btn} text-gray-600 hover:bg-gray-100`}>수정</button>
+                                    <button onClick={() => setDeleteTarget(name)} className={`${btn} border-red-200 text-red-500 hover:bg-red-50`}>삭제</button>
                                   </div>
                                 </td>
                               </tr>
                             )}
-                            <tr className={`border-b border-gray-100 ${bad && !personSkipped ? 'bg-red-50/60' : ''} ${skipped ? 'opacity-40' : ''}`}>
+                            <tr className={`border-b border-gray-100 ${bad && !rowSkipped ? 'bg-red-50/60' : ''} ${skipped ? 'opacity-40' : ''}`}>
                               <td className="px-3 py-1.5 whitespace-nowrap">
                                 <span className={`px-2 py-0.5 rounded text-xs font-semibold ${r.type === 'ad' ? 'bg-orange-100 text-orange-700' : r.type === 'new' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{TYPE_LABEL[r.type]}</span>
                               </td>
@@ -459,71 +472,173 @@ export default function AdminShipping() {
           name={editPerson}
           rows={rows.filter(r => r.values[2] === editPerson)}
           itemMap={itemMap}
+          skippedKeys={skippedKeys}
+          onSaveSkips={ids => saveSkips(skipsForPerson(editPerson, ids))}
           onClose={() => setEditPerson(null)}
           onSaved={() => { setEditPerson(null); setAutoState({ phase: 'idle' }); flash(`${editPerson}님 수정 완료`); load(month) }}
+        />
+      )}
+      {deleteTarget && (
+        <DeletePersonModal
+          name={deleteTarget}
+          rows={rows.filter(r => r.values[2] === deleteTarget)}
+          kindLabel={typeFilter === 'new' ? '신제품' : '무상 + 광고'}
+          onClose={() => setDeleteTarget(null)}
+          onDelete={(targetRows, whole) => deleteRows(deleteTarget, targetRows, whole)}
         />
       )}
     </div>
   )
 }
 
-function EditPersonModal({ name, rows, itemMap, onClose, onSaved }) {
-  const [draft, setDraft] = useState(() => Object.fromEntries(rows.filter(r => r.assignId).map(r => [r.assignId, { productId: r.productId, quantity: Number(r.values[1]) || 1 }])))
+function Stepper({ value, min = 0, max = 99, onChange }) {
+  const b = 'w-8 h-8 rounded-lg border text-lg leading-none text-gray-600 hover:bg-gray-50 disabled:opacity-30'
+  return (
+    <div className="flex items-center gap-1">
+      <button type="button" disabled={value <= min} onClick={() => onChange(Math.max(min, value - 1))} className={b}>−</button>
+      <span className={`w-8 text-center font-semibold ${value === 0 ? 'text-red-500' : 'text-gray-800'}`}>{value}</span>
+      <button type="button" disabled={value >= max} onClick={() => onChange(Math.min(max, value + 1))} className={b}>+</button>
+    </div>
+  )
+}
+
+function EditPersonModal({ name, rows, itemMap, skippedKeys, onSaveSkips, onClose, onSaved }) {
+  // 제품별: 수량(0 = 이번 발송에서 빼기) · 맛/옵션 변경
+  const [draft, setDraft] = useState(() => Object.fromEntries(rows.map(r => {
+    const q = Number(r.values[1]) || 1
+    return [r.key, { productId: r.productId, quantity: skippedKeys.has(r.key) ? 0 : q, orig: q }]
+  })))
   const [saving, setSaving] = useState(false)
+  const setRow = (k, patch) => setDraft(d => ({ ...d, [k]: { ...d[k], ...patch } }))
 
   async function save() {
     setSaving(true)
-    for (const r of rows.filter(x => x.assignId)) {
-      const d = draft[r.assignId]
-      if (!d) continue
-      if (d.productId === r.productId && d.quantity === (Number(r.values[1]) || 1)) continue
+    const skipIds = []
+    for (const r of rows) {
+      const d = draft[r.key]
+      if (d.quantity === 0) { skipIds.push(erpRowSkipId(r)); continue }
+      if (!r.assignId) continue
       const prod = itemMap[r.itemId]?.products.find(p => p.id === d.productId)
-      const patch = { quantity: Math.max(1, Number(d.quantity) || 1) }
-      if (prod) Object.assign(patch, { product_id: prod.id, product_name: prod.name, sku: (prod.sku || '').trim() })
+      const changedProduct = prod && d.productId !== r.productId
+      if (!changedProduct && d.quantity === d.orig) continue
+      const patch = { quantity: d.quantity }
+      if (changedProduct) Object.assign(patch, { product_id: prod.id, product_name: prod.name, sku: (prod.sku || '').trim() })
       const { error } = await supabase.from('ad_assignments').update(patch).eq('id', r.assignId)
       if (error) { setSaving(false); alert('저장 실패: ' + error.message); return }
     }
+    const ok = await onSaveSkips(skipIds)
     setSaving(false)
-    onSaved()
+    if (ok !== false) onSaved()
+  }
+
+  const sending = rows.filter(r => draft[r.key].quantity > 0).length
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b">
+          <div>
+            <h3 className="font-bold text-gray-900">{name}님 발송 제품 수정</h3>
+            <p className="text-xs text-gray-400 mt-0.5">수량을 0으로 하거나 [빼기]를 누르면 이번 발송에서만 빠져요 (배정은 그대로)</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <div className="p-6 space-y-2 max-h-[60vh] overflow-y-auto">
+          {rows.map(r => {
+            const item = r.itemId ? itemMap[r.itemId] : null
+            const d = draft[r.key]
+            const off = d.quantity === 0
+            const canPick = r.assignId && item && item.pick_mode === 'one' && item.products.length > 1
+            return (
+              <div key={r.key} className={`border rounded-xl p-3 flex items-center gap-3 ${off ? 'bg-gray-50' : ''}`}>
+                <span className={`px-2 py-0.5 rounded text-xs font-semibold flex-shrink-0 ${r.type === 'ad' ? 'bg-orange-100 text-orange-700' : r.type === 'new' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{TYPE_LABEL[r.type]}</span>
+                <div className={`flex-1 min-w-0 ${off ? 'opacity-50' : ''}`}>
+                  {canPick ? (
+                    <select value={d.productId || ''} onChange={e => setRow(r.key, { productId: e.target.value })} className="w-full border rounded-lg px-2 py-1.5 text-sm">
+                      {item.products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  ) : (
+                    <p className={`text-sm text-gray-800 truncate ${off ? 'line-through' : ''}`}>{r.productName}</p>
+                  )}
+                  {!r.assignId && <p className="text-[11px] text-gray-400">앰버서더 신청 제품 · 1개 고정</p>}
+                </div>
+                <Stepper value={d.quantity} max={r.assignId ? 99 : 1} onChange={v => setRow(r.key, { quantity: v })} />
+                <button onClick={() => setRow(r.key, { quantity: off ? (r.assignId ? Math.max(1, d.orig) : 1) : 0 })}
+                  className={`text-xs font-semibold rounded-lg px-2.5 py-1.5 border flex-shrink-0 w-20 whitespace-nowrap ${off ? 'border-green-300 text-green-700 hover:bg-green-50' : 'text-gray-600 hover:bg-gray-100'}`}>
+                  {off ? '다시 넣기' : '빼기'}
+                </button>
+              </div>
+            )
+          })}
+        </div>
+        <div className="flex items-center gap-2 px-6 py-4 border-t">
+          <span className="text-sm text-gray-500 flex-1">보낼 제품 <b className="text-gray-800">{sending}</b> / {rows.length}개</span>
+          <button onClick={onClose} className="border rounded-xl px-5 py-2.5 text-sm text-gray-600 hover:bg-gray-50">취소</button>
+          <button onClick={save} disabled={saving} className="bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white rounded-xl px-6 py-2.5 text-sm font-semibold">{saving ? '저장 중...' : '저장'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DeletePersonModal({ name, rows, kindLabel, onClose, onDelete }) {
+  const [mode, setMode] = useState('items') // items | person
+  const [picked, setPicked] = useState(new Set())
+  const [busy, setBusy] = useState(false)
+  const toggle = k => setPicked(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n })
+  const target = mode === 'person' ? rows : rows.filter(r => picked.has(r.key))
+
+  async function run() {
+    if (!target.length) return
+    const msg = mode === 'person'
+      ? `${name}님을 이번 ${kindLabel} 발송에서 삭제할까요?\n\n· 광고/신제품 배정은 지워지고 (사람별 배정에서도)\n· 무상 신청은 남지만 이번 발송에서는 빠져요.`
+      : `${name}님 제품 ${target.length}개를 삭제할까요?\n(${target.map(r => r.productName).join(', ')})`
+    if (!confirm(msg)) return
+    setBusy(true)
+    await onDelete(target, mode === 'person')
+    setBusy(false)
   }
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl w-full max-w-lg" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b">
-          <h3 className="font-bold text-gray-900">{name}님 발송 제품 수정</h3>
+          <h3 className="font-bold text-gray-900">{name}님 삭제</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
         </div>
-        <div className="p-6 space-y-3 max-h-[60vh] overflow-y-auto">
-          {rows.map(r => {
-            const item = r.itemId ? itemMap[r.itemId] : null
-            const d = r.assignId ? draft[r.assignId] : null
-            const canPick = item && item.pick_mode === 'one' && item.products.length > 1
-            return (
-              <div key={r.key} className="border rounded-xl p-3">
-                <p className="text-xs text-gray-400 mb-1">{TYPE_LABEL[r.type]}{r.itemTitle ? ` · ${r.itemTitle}` : ''}</p>
-                {!r.assignId ? (
-                  <p className="text-sm text-gray-700">{r.productName} <span className="text-xs text-gray-400">(앰버서더 신청 · 신청 현황에서 변경)</span></p>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    {canPick ? (
-                      <select value={d.productId || ''} onChange={e => setDraft({ ...draft, [r.assignId]: { ...d, productId: e.target.value } })} className="flex-1 border rounded-lg px-2 py-1.5 text-sm">
-                        {item.products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                      </select>
-                    ) : (
-                      <p className="flex-1 text-sm text-gray-700">{r.productName}</p>
-                    )}
-                    <span className="text-xs text-gray-400">수량</span>
-                    <input type="number" min={1} value={d.quantity} onChange={e => setDraft({ ...draft, [r.assignId]: { ...d, quantity: Math.max(1, Number(e.target.value) || 1) } })} className="w-16 border rounded-lg px-2 py-1.5 text-sm" />
-                  </div>
-                )}
-              </div>
-            )
-          })}
+        <div className="p-6 space-y-4">
+          <div className="grid grid-cols-2 gap-2">
+            {[['items', '제품만 삭제', '고른 제품만 지워요'], ['person', '인원 삭제', `${name}님을 이번 발송에서 통째로`]].map(([k, l, d]) => (
+              <button key={k} onClick={() => setMode(k)} className={`text-left border-2 rounded-xl p-3 ${mode === k ? 'border-red-400 bg-red-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                <span className="block font-semibold text-gray-900">{l}</span>
+                <span className="block text-xs text-gray-500 mt-0.5">{d}</span>
+              </button>
+            ))}
+          </div>
+          {mode === 'items' ? (
+            <div className="border rounded-xl divide-y max-h-64 overflow-y-auto">
+              {rows.map(r => (
+                <label key={r.key} className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-gray-50">
+                  <input type="checkbox" checked={picked.has(r.key)} onChange={() => toggle(r.key)} className="w-4 h-4 accent-red-500" />
+                  <span className={`px-2 py-0.5 rounded text-xs font-semibold ${r.type === 'ad' ? 'bg-orange-100 text-orange-700' : r.type === 'new' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{TYPE_LABEL[r.type]}</span>
+                  <span className="text-sm text-gray-800 flex-1">{r.productName}</span>
+                  <span className="text-xs text-gray-400">×{r.values[1]}</span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-sm text-red-700 space-y-1">
+              <p>· 광고/신제품 배정 {rows.filter(r => r.assignId).length}개 삭제 (사람별 배정에서도)</p>
+              {rows.some(r => !r.assignId) && <p>· 무상 신청 {rows.filter(r => !r.assignId).length}개는 남기고 이번 발송에서만 빼요</p>}
+            </div>
+          )}
+          {mode === 'items' && rows.some(r => !r.assignId && picked.has(r.key)) && <p className="text-xs text-gray-500">무상 제품은 앰버서더 신청이라 신청 내역은 남고, 이번 발송에서만 빠져요.</p>}
         </div>
         <div className="flex gap-2 px-6 py-4 border-t">
           <button onClick={onClose} className="flex-1 border rounded-xl py-3 text-sm text-gray-600 hover:bg-gray-50">취소</button>
-          <button onClick={save} disabled={saving} className="flex-1 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white rounded-xl py-3 text-sm font-semibold">{saving ? '저장 중...' : '저장'}</button>
+          <button onClick={run} disabled={busy || !target.length} className="flex-1 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white rounded-xl py-3 text-sm font-semibold">
+            {busy ? '삭제 중...' : mode === 'person' ? '인원 삭제' : `제품 ${target.length}개 삭제`}
+          </button>
         </div>
       </div>
     </div>
