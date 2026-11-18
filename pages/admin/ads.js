@@ -453,7 +453,7 @@ export default function AdminAds() {
                               <button onClick={() => moveItem(item, 1)} disabled={idx === items.length - 1} className="text-gray-400 hover:text-gray-700 disabled:opacity-30 text-xs px-1">▼</button>
                             </div>
                           </div>
-                          <p className="text-xs text-orange-600 mb-2">{item.pick_mode === 'one' ? '사람별로 1개 선택' : '연결 제품 모두 발송'} · 배정 {count}명</p>
+                          <p className="text-xs text-orange-600 mb-2">{item.pick_mode === 'one' ? '사람별로 1개 선택' : '연결 제품 모두 발송'} · 배정 {count}명{count === 0 && <button onClick={() => setTab('assign')} className="ml-1.5 text-red-500 underline font-semibold">받을 사람 고르기 →</button>}</p>
                           <div className="space-y-0.5 mb-3">
                             {item.products.map(p => (
                               <p key={p.id} className={`text-xs ${p.is_active ? 'text-gray-600' : 'text-gray-400'}`}>· {p.name}{p.quantity > 1 && <b className="text-orange-600"> ×{p.quantity}</b>}{!p.is_active && ' (숨김 제품)'} <span className="text-gray-400">({(p.sku || '').trim() || '전산명 없음'})</span></p>

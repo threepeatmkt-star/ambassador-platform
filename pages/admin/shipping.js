@@ -254,7 +254,15 @@ export default function AdminShipping() {
                           </tr>
                         )
                       })}
-                      {rows.length === 0 && <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-400">{monthLabel(month)} 신청·광고 배정 내역이 없어요.</td></tr>}
+                      {rows.length === 0 && <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-400">
+                        {typeFilter === 'new' ? (
+                          <>
+                            <p>{monthLabel(month)} 신제품을 받을 사람이 아직 없어요.</p>
+                            <p className="text-sm mt-1">광고제품 · 가이드 › <b>사람별 배정</b>에서 신제품 칸을 고르면 여기에 나와요. (전체 보내려면 칸 위 [일괄 지정 / 전체 배정])</p>
+                            <a href="/admin/ads?tab=assign" className="inline-block mt-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-xl">사람별 배정으로 가기</a>
+                          </>
+                        ) : `${monthLabel(month)} 신청·광고 배정 내역이 없어요.`}
+                      </td></tr>}
                     </tbody>
                   </table>
                 </div>
