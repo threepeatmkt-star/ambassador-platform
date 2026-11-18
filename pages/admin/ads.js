@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useAdminAuth } from '../../lib/useAdminAuth'
-import { formatGuide, parseGuide, toLatestFormat, emptyItem, guideWarnings, monthNumber, normalizeHashtags, countHashtags, HASHTAG_COUNT, MAX_SELLING_POINTS } from '../../lib/guide'
+import { DEFAULT_NEW_GREETING, formatGuide, parseGuide, toLatestFormat, emptyItem, guideWarnings, monthNumber, normalizeHashtags, countHashtags, HASHTAG_COUNT, MAX_SELLING_POINTS } from '../../lib/guide'
 import Head from 'next/head'
 import Link from 'next/link'
 import AdminNav from '../../components/AdminNav'
@@ -25,7 +25,7 @@ function prevMonth(month) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
-const ITEM_SELECT = 'id, month, kind, title, pick_mode, links, topics, notices, selling_points, hashtags, sort_order, ad_item_products(product_id, quantity, sort_order, product:products(id, name, sku, is_active))'
+const ITEM_SELECT = 'id, month, kind, greeting, intro, title, pick_mode, links, topics, notices, selling_points, hashtags, sort_order, ad_item_products(product_id, quantity, sort_order, product:products(id, name, sku, is_active))'
 
 function normalizeItem(row) {
   const products = (row.ad_item_products || [])
@@ -133,11 +133,12 @@ export default function AdminAds() {
 
   // ───────── 광고제품(가이드) 편집 ─────────
   function openNew(kind = 'ad') {
-    setEditor({ ...emptyItem(month), kind, products: [], paste: '' })
+    const base = emptyItem(month)
+    setEditor({ ...base, kind, greeting: kind === 'new' ? DEFAULT_NEW_GREETING : '', intro: '', ...(kind === 'new' ? { notices: '', hashtags: '', topics: [] } : {}), products: [], paste: '' })
   }
 
   function openEdit(item) {
-    setEditor({ ...item, topics: item.topics.length ? item.topics : [{ title: '', body: '' }], products: [...item.products], paste: '' })
+    setEditor({ ...item, topics: item.topics.length || item.kind === 'new' ? item.topics : [{ title: '', body: '' }], products: [...item.products], paste: '' })
   }
 
   async function saveItem() {
@@ -151,10 +152,13 @@ export default function AdminAds() {
       title: e.title.trim(),
       pick_mode: e.pick_mode,
       links: e.links,
-      topics: e.topics.filter(t => t.title.trim() || t.body.trim()),
-      notices: e.notices,
-      selling_points: e.selling_points,
-      hashtags: e.hashtags,
+      // 신제품: 가이드 양식 없이 인사말 · 소개 · 공식 홈페이지만
+      greeting: e.kind === 'new' ? (e.greeting || '') : '',
+      intro: e.kind === 'new' ? (e.intro || '') : '',
+      topics: e.kind === 'new' ? [] : e.topics.filter(t => t.title.trim() || t.body.trim()),
+      notices: e.kind === 'new' ? '' : e.notices,
+      selling_points: e.kind === 'new' ? '' : e.selling_points,
+      hashtags: e.kind === 'new' ? '' : e.hashtags,
       sort_order: e.id ? e.sort_order : items.length,
       updated_at: new Date().toISOString(),
     }
@@ -457,7 +461,7 @@ export default function AdminAds() {
                           </div>
                           {warns.length > 0 && <p className="text-xs text-amber-600 mb-3">⚠️ {warns.join(' · ')}</p>}
                           <div className="flex gap-2 mt-auto">
-                            <button onClick={() => openEdit(item)} className="flex-1 bg-gray-900 hover:bg-gray-700 text-white rounded-lg py-2 text-xs font-semibold">가이드 보기 · 수정</button>
+                            <button onClick={() => openEdit(item)} className="flex-1 bg-gray-900 hover:bg-gray-700 text-white rounded-lg py-2 text-xs font-semibold">{item.kind === 'new' ? '소개 메시지 보기 · 수정' : '가이드 보기 · 수정'}</button>
                             <button onClick={() => deleteItem(item)} className="border border-red-200 text-red-400 rounded-lg px-3 py-2 text-xs hover:bg-red-50">삭제</button>
                           </div>
                         </div>
@@ -571,7 +575,7 @@ export default function AdminAds() {
                           <p className="text-xs text-gray-400 mt-0.5">받는 사람 {names.length}명</p>
                         </div>
                         <div className="flex gap-2 flex-shrink-0">
-                          <button onClick={async () => setMsg(await copyText(formatGuide(item, month)) ? `'${item.title}' 가이드 복사됨` : '복사 실패')} className="bg-gray-900 hover:bg-gray-700 text-white rounded-lg px-3 py-1.5 text-xs font-semibold">가이드 복사</button>
+                          <button onClick={async () => setMsg(await copyText(formatGuide(item, month)) ? `'${item.title}' ${item.kind === 'new' ? '소개 메시지' : '가이드'} 복사됨` : '복사 실패')} className="bg-gray-900 hover:bg-gray-700 text-white rounded-lg px-3 py-1.5 text-xs font-semibold">{item.kind === 'new' ? '메시지 복사' : '가이드 복사'}</button>
                           <button onClick={async () => setMsg(await copyText(names.map(n => instaOf(n) ? `@${instaOf(n)}` : n).join('\n')) ? '계정 목록 복사됨' : '복사 실패')} disabled={!names.length} className="border rounded-lg px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40">계정 복사</button>
                         </div>
                       </div>
@@ -645,7 +649,7 @@ function ItemEditor({ editor, setEditor, products, library, month, saving, onSav
     set({
       title: src.title, pick_mode: src.pick_mode, links: src.links,
       topics: src.topics.length ? src.topics.map(t => ({ ...t })) : [{ title: '', body: '' }],
-      notices: src.notices, selling_points: src.selling_points, hashtags: src.hashtags,
+      notices: src.notices, selling_points: src.selling_points, hashtags: src.hashtags, greeting: src.greeting || '', intro: src.intro || '',
       products: src.products.filter(p => products.some(x => x.id === p.id)).map(p => ({ ...p })),
     })
   }
@@ -671,32 +675,39 @@ function ItemEditor({ editor, setEditor, products, library, month, saving, onSav
             <div>
               <label className="text-xs text-gray-500 mb-1 block">유형</label>
               <div className="grid grid-cols-2 gap-2">
-                {[['ad', '광고제품', '매달 보내는 광고 · 월간 출고에 같이'], ['new', '신제품', '출시 때 따로 보내는 시딩 · ERP 별도 등록']].map(([k, l, d]) => (
+                {[['ad', '광고제품', '매달 보내는 광고 · 월간 출고에 같이'], ['new', '신제품', '가이드 없이 소개 메시지만 · ERP 별도 등록']].map(([k, l, d]) => (
                   <label key={k} className={`border-2 rounded-xl p-3 cursor-pointer ${(e.kind || 'ad') === k ? (k === 'new' ? 'border-blue-500 bg-blue-50' : 'border-orange-400 bg-orange-50') : 'border-gray-200'}`}>
-                    <input type="radio" checked={(e.kind || 'ad') === k} onChange={() => set({ kind: k })} className="mr-1.5 accent-orange-500" />
+                    <input type="radio" checked={(e.kind || 'ad') === k} onChange={() => set(k === 'new' ? { kind: k, greeting: e.greeting || DEFAULT_NEW_GREETING } : { kind: k, topics: e.topics?.length ? e.topics : [{ title: '', body: '' }], hashtags: e.hashtags || '#협찬 #삼대오백' })} className="mr-1.5 accent-orange-500" />
                     <span className="text-sm font-medium text-gray-800">{l}</span>
                     <p className="text-xs text-gray-400 mt-0.5">{d}</p>
                   </label>
                 ))}
               </div>
             </div>
-            {library.filter(i => i.id !== e.id).length > 0 && (
+            {library.filter(i => i.id !== e.id && (i.kind || 'ad') === (e.kind || 'ad')).length > 0 && (
               <div className="bg-gray-50 border rounded-xl p-3">
                 <label className="text-xs font-semibold text-gray-600 mb-1 block">지난 가이드 보관함에서 불러오기</label>
                 <select value="" onChange={ev => loadFromLibrary(ev.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-xs text-gray-700">
                   <option value="">월 · 제품 선택…</option>
-                  {library.filter(i => i.id !== e.id).map(i => <option key={i.id} value={i.id}>{i.month} · {i.title}</option>)}
+                  {library.filter(i => i.id !== e.id && (i.kind || 'ad') === (e.kind || 'ad')).map(i => <option key={i.id} value={i.id}>{i.month} · {i.title}</option>)}
                 </select>
               </div>
             )}
+            {e.kind === 'new' ? (
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">👋 인사말</label>
+                <textarea value={e.greeting || ''} onChange={ev => set({ greeting: ev.target.value })} rows={3} className={input} />
+              </div>
+            ) : (
             <details className="bg-orange-50 border border-orange-100 rounded-xl p-3">
               <summary className="text-xs font-semibold text-orange-700 cursor-pointer">기존 가이드 텍스트 붙여넣어 자동 채우기</summary>
               <textarea value={e.paste} onChange={ev => set({ paste: ev.target.value })} rows={6} placeholder="안녕하세요, 삼대오백 마케팅팀입니다. ... 전체를 붙여넣으세요" className={`${input} mt-2 text-xs`} />
               <button onClick={applyPaste} className="mt-2 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg">항목별로 채우기</button>
             </details>
+            )}
 
             <div>
-              <label className="text-xs text-gray-500 mb-1 block">📦 제품 표시명 (가이드에 보이는 이름)</label>
+              <label className="text-xs text-gray-500 mb-1 block">📦 제품 표시명 ({e.kind === 'new' ? '메시지' : '가이드'}에 보이는 이름)</label>
               <input value={e.title} onChange={ev => set({ title: ev.target.value })} placeholder="예: 게이너 1kg (맛 2개중 선택 씨리얼, 쿠키 크럼블)" className={input} />
             </div>
 
@@ -739,11 +750,19 @@ function ItemEditor({ editor, setEditor, products, library, month, saving, onSav
               </div>
             </div>
 
+            {e.kind === 'new' && (
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">✏️ 간단한 소개 (여러 줄 가능)</label>
+                <textarea value={e.intro || ''} onChange={ev => set({ intro: ev.target.value })} rows={4} placeholder="예: 운동 전 한 캔으로 에너지 충전! 무설탕 · 카페인 OOmg ..." className={input} />
+              </div>
+            )}
+
             <div>
-              <label className="text-xs text-gray-500 mb-1 block">제품 링크 (한 줄에 하나)</label>
+              <label className="text-xs text-gray-500 mb-1 block">{e.kind === 'new' ? '🔗 공식 홈페이지 링크' : '제품 링크'} (한 줄에 하나)</label>
               <textarea value={e.links} onChange={ev => set({ links: ev.target.value })} rows={2} placeholder="https://samdae500.com/surl/p/..." className={input} />
             </div>
 
+            {e.kind !== 'new' && (<>
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="text-xs text-gray-500">📍 콘텐츠 주제</label>
@@ -780,12 +799,13 @@ function ItemEditor({ editor, setEditor, products, library, month, saving, onSav
               </div>
               <input value={e.hashtags} onChange={ev => set({ hashtags: ev.target.value })} placeholder="#협찬 #삼대오백 # # #" className={input} />
             </div>
+            </>)}
           </div>
 
           {/* 미리보기 */}
           <div className="lg:sticky lg:top-0 self-start">
             <div className="flex items-center justify-between mb-2">
-              <p className="text-xs font-semibold text-gray-500">가이드 미리보기</p>
+              <p className="text-xs font-semibold text-gray-500">{e.kind === 'new' ? 'DM 메시지 미리보기' : '가이드 미리보기'}</p>
               <button onClick={() => copyText(preview)} className="text-xs border rounded-lg px-3 py-1 text-gray-600 hover:bg-gray-50">복사</button>
             </div>
             <pre className="whitespace-pre-wrap font-sans text-sm text-gray-800 bg-gray-50 border rounded-xl p-4 leading-relaxed max-h-[65vh] overflow-y-auto">{preview}</pre>
