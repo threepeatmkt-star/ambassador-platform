@@ -3,7 +3,7 @@
 // - check: ERP 로그인 · 제품 매칭 · 중복 확인까지만 (ERP에 아무것도 만들지 않음)
 // - register: 실제로 ERP 배송주문 등록
 import { createClient } from '@supabase/supabase-js'
-import { groupByAmbassador, buildErpRows, fetchAdAssignments, erpMemo } from '../../../lib/erp'
+import { groupByAmbassador, buildErpRows, fetchAdAssignments, erpMemo, isRowSkipped } from '../../../lib/erp'
 import { erpLogin, erpProductMap, buildErpPayload, erpCreateDeliveryOrder, erpFindOrderByMemo, erpMonthShipped, erpResolveApprovers, ERP_APPROVERS } from '../../../lib/erpApi'
 
 const APP_SELECT = `
@@ -69,8 +69,9 @@ export default async function handler(req, res) {
     let skipNames = []
     try { skipNames = JSON.parse(skipRow?.value || '[]') } catch {}
     const skipSet = new Set(skipNames)
-    const validRows = rows.filter(r => !issueKeys.has(r.key) && !skipSet.has(r.values[2]))
-    const activeIssues = issues.filter(i => !skipSet.has(i.name))
+    const skippedKeys = new Set(rows.filter(r => isRowSkipped(r, skipSet)).map(r => r.key))
+    const validRows = rows.filter(r => !issueKeys.has(r.key) && !skippedKeys.has(r.key))
+    const activeIssues = issues.filter(i => !skippedKeys.has(i.key))
     if (activeIssues.length && !skipIssues) return res.status(400).json({ error: `확인이 필요한 행 ${activeIssues.length}건이 있어요.`, issues: activeIssues })
     if (!validRows.length) return res.status(400).json({ error: '등록할 행이 없어요.' })
 
