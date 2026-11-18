@@ -47,6 +47,9 @@ export default function AdminShipping() {
   const regKey = m => (typeFilter === 'new' ? `erp_registered_new_${m}` : `erp_registered_${m}`)
   const [message, setMessage] = useState('')
   const [skipIssues, setSkipIssues] = useState(false)
+  const [skips, setSkips] = useState({}) // { monthly: [이름], new: [이름] } 이번 발송에서 뺀 사람
+  const [itemMap, setItemMap] = useState({}) // 이번 달 광고/신제품 아이템 (수정용 제품 목록)
+  const [editPerson, setEditPerson] = useState(null) // 이름
   const [toast, setToast] = useState('')
   const [autoState, setAutoState] = useState({ phase: 'idle' }) // idle | checking | checked | registering | done | error
   const [showManual, setShowManual] = useState(false)
@@ -63,11 +66,12 @@ export default function AdminShipping() {
   async function load(m) {
     setLoading(true)
     setLoadError('')
-    const [appsRes, ambRes, adsRes, regRes] = await Promise.all([
+    const [appsRes, ambRes, adsRes, regRes, itemsRes] = await Promise.all([
       supabase.from('applications').select(APP_SELECT).eq('month', m).order('submitted_at'),
       supabase.from('ambassadors').select('*'),
       fetchAdAssignments(supabase, m),
-      supabase.from('settings').select('key,value').in('key', [`erp_registered_${m}`, `erp_registered_new_${m}`]),
+      supabase.from('settings').select('key,value').in('key', [`erp_registered_${m}`, `erp_registered_new_${m}`, `erp_skip_monthly_${m}`, `erp_skip_new_${m}`]),
+      supabase.from('ad_items').select('id, title, kind, pick_mode, ad_item_products(product_id, quantity, sort_order, product:products(id, name, sku))').eq('month', m),
     ])
     if (appsRes.error) setLoadError('신청 내역을 불러오지 못했어요: ' + appsRes.error.message)
     setApplications(appsRes.data || [])
@@ -75,15 +79,23 @@ export default function AdminShipping() {
     setAdAssignments(adsRes.data || [])
     const parse = k => { try { const v = regRes.data?.find(r => r.key === k)?.value; return v ? JSON.parse(v) : null } catch { return null } }
     setRegs({ monthly: parse(`erp_registered_${m}`), new: parse(`erp_registered_new_${m}`) })
+    setSkips({ monthly: parse(`erp_skip_monthly_${m}`) || [], new: parse(`erp_skip_new_${m}`) || [] })
+    setItemMap(Object.fromEntries((itemsRes.data || []).map(it => [it.id, { ...it, products: (it.ad_item_products || []).sort((a, b) => a.sort_order - b.sort_order).filter(x => x.product).map(x => x.product) }])))
     setLoading(false)
   }
 
   const types = typeFilter === 'all' ? ['free', 'ad'] : [typeFilter]
   const newCount = adAssignments.filter(a => a.item_kind === 'new').length
   const groups = groupByAmbassador(applications, adAssignments)
-  const { rows, issues } = buildErpRows(groups, ambassadors, { types, message: message.trim() })
+  const { rows, issues: rawIssues } = buildErpRows(groups, ambassadors, { types, message: message.trim() })
+  const skipNames = skips[regKind] || []
+  const skipSet = new Set(skipNames)
+  const issues = rawIssues.filter(i => !skipSet.has(i.name))
   const issueKeys = new Set(issues.map(i => i.key))
-  const exportRows = skipIssues ? rows.filter(r => !issueKeys.has(r.key)) : rows
+  const exportRows = (skipIssues ? rows.filter(r => !issueKeys.has(r.key)) : rows).filter(r => !skipSet.has(r.values[2]))
+  const firstRowOf = new Set()
+  { const seen = new Set(); for (const r of rows) { if (!seen.has(r.values[2])) { seen.add(r.values[2]); firstRowOf.add(r.key) } } }
+  const personCount = new Set(rows.map(r => r.values[2])).size
   const people = new Set(exportRows.map(r => r.values[2])).size
   const totalQty = exportRows.reduce((a, r) => a + (Number(r.values[1]) || 0), 0)
   const canExport = exportRows.length > 0 && (skipIssues || issues.length === 0)
@@ -133,6 +145,30 @@ export default function AdminShipping() {
   function flash(t) {
     setToast(t)
     setTimeout(() => setToast(''), 2000)
+  }
+
+  // ── 인원별 관리: 이번 발송에서 빼기 / 수정 / 삭제 ──
+  async function toggleSkip(name) {
+    const next = skipSet.has(name) ? skipNames.filter(n => n !== name) : [...skipNames, name]
+    setSkips(s => ({ ...s, [regKind]: next }))
+    setAutoState({ phase: 'idle' })
+    const key = `erp_skip_${regKind}_${month}`
+    const { error } = next.length
+      ? await supabase.from('settings').upsert({ key, value: JSON.stringify(next) })
+      : await supabase.from('settings').delete().eq('key', key)
+    if (error) { alert('저장 실패: ' + error.message); load(month) }
+  }
+
+  async function deletePerson(name) {
+    const mine = rows.filter(r => r.values[2] === name && r.assignId)
+    if (!mine.length) { alert('무상제품은 앰버서더가 직접 신청한 거라 여기서 삭제할 수 없어요. [이번 발송에서 빼기]를 써주세요.'); return }
+    const label = typeFilter === 'new' ? '신제품' : '광고제품'
+    if (!confirm(`${name}님의 ${label} 배정 ${mine.length}건을 삭제할까요?\n(${mine.map(r => r.productName).join(', ')})\n\n사람별 배정에서도 지워져요.${mine.length < rows.filter(r => r.values[2] === name).length ? '\n무상제품은 그대로 남아요.' : ''}`)) return
+    const { error } = await supabase.from('ad_assignments').delete().in('id', mine.map(r => r.assignId))
+    if (error) { alert('삭제 실패: ' + error.message); return }
+    setAutoState({ phase: 'idle' })
+    flash(`${name}님 ${label} 배정을 삭제했어요`)
+    load(month)
   }
 
   function download() {
@@ -225,7 +261,7 @@ export default function AdminShipping() {
 
             <div className="bg-white rounded-2xl border overflow-hidden">
               <div className="px-5 py-3 bg-gray-50 border-b flex items-center justify-between">
-                <p className="font-semibold text-gray-700">ERP 업로드 파일 미리보기</p>
+                <p className="font-semibold text-gray-700">ERP 업로드 파일 미리보기 {skipNames.filter(n => rows.some(r => r.values[2] === n)).length > 0 && <span className="ml-2 text-sm font-normal text-gray-500">· {personCount}명 중 <b className="text-gray-700">{skipNames.filter(n => rows.some(r => r.values[2] === n)).length}명 이번 발송 제외</b></span>}</p>
                 <p className="text-xs text-gray-400">파일에는 아래 8개 열만 들어가요 (같은 사람 행은 붙어서)</p>
               </div>
               {loading ? (
@@ -237,24 +273,41 @@ export default function AdminShipping() {
                       <tr className="border-b">
                         <th className="px-3 py-2 text-left text-gray-400 font-medium whitespace-nowrap">구분</th>
                         {ERP_HEADERS.map(h => <th key={h} className="px-3 py-2 text-left text-gray-500 font-medium whitespace-nowrap">{h}</th>)}
+                        <th className="px-3 py-2 text-left text-gray-500 font-medium whitespace-nowrap sticky right-0 bg-white">인원별 관리</th>
                       </tr>
                     </thead>
                     <tbody>
                       {rows.map(r => {
                         const bad = issueKeys.has(r.key)
-                        const skipped = bad && skipIssues
+                        const personSkipped = skipSet.has(r.values[2])
+                        const skipped = (bad && skipIssues) || personSkipped
+                        const first = firstRowOf.has(r.key)
                         return (
-                          <tr key={r.key} className={`border-b last:border-0 ${bad ? 'bg-red-50/60' : ''} ${skipped ? 'opacity-40 line-through' : ''}`}>
+                          <tr key={r.key} className={`border-b last:border-0 ${first ? 'border-t-2 border-t-gray-100' : ''} ${bad && !personSkipped ? 'bg-red-50/60' : ''} ${personSkipped ? 'bg-gray-50' : ''}`}>
                             <td className="px-3 py-1.5 whitespace-nowrap">
                               <span className={`px-2 py-0.5 rounded text-xs font-semibold ${r.type === 'ad' ? 'bg-orange-100 text-orange-700' : r.type === 'new' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{TYPE_LABEL[r.type]}</span>
                             </td>
                             {r.values.map((v, i) => (
-                              <td key={i} className={`px-3 py-1.5 text-gray-700 ${i === 5 ? 'min-w-[260px]' : 'whitespace-nowrap'}`}>{String(v ?? '')}</td>
+                              <td key={i} className={`px-3 py-1.5 text-gray-700 ${i === 5 ? 'min-w-[260px]' : 'whitespace-nowrap'} ${skipped ? 'opacity-40 line-through' : ''}`}>{String(v ?? '')}</td>
                             ))}
+                            <td className="px-3 py-1.5 whitespace-nowrap sticky right-0 bg-inherit">
+                              {first && (
+                                <div className="flex gap-1">
+                                  {personSkipped ? (
+                                    <button onClick={() => toggleSkip(r.values[2])} className="text-xs border border-green-300 text-green-700 rounded-lg px-2 py-1 hover:bg-green-50 font-semibold">다시 넣기</button>
+                                  ) : (<>
+                                    <button onClick={() => toggleSkip(r.values[2])} className="text-xs border rounded-lg px-2 py-1 text-gray-600 hover:bg-gray-50" title="이번 ERP 등록에서만 빼요 (배정은 그대로)">빼기</button>
+                                    <button onClick={() => setEditPerson(r.values[2])} className="text-xs border rounded-lg px-2 py-1 text-gray-600 hover:bg-gray-50">수정</button>
+                                    <button onClick={() => deletePerson(r.values[2])} className="text-xs border border-red-200 text-red-500 rounded-lg px-2 py-1 hover:bg-red-50" title="배정 자체를 삭제">삭제</button>
+                                  </>)}
+                                </div>
+                              )}
+                              {first && personSkipped && <p className="text-[11px] text-gray-400 mt-0.5">이번 발송 제외</p>}
+                            </td>
                           </tr>
                         )
                       })}
-                      {rows.length === 0 && <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-400">
+                      {rows.length === 0 && <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-400">
                         {typeFilter === 'new' ? (
                           <>
                             <p>{monthLabel(month)} 신제품을 받을 사람이 아직 없어요.</p>
@@ -390,6 +443,78 @@ export default function AdminShipping() {
 
             {toast && <div className="bg-gray-900 text-white text-sm rounded-xl px-4 py-2 text-center">{toast}</div>}
           </div>
+        </div>
+      </div>
+      {editPerson && (
+        <EditPersonModal
+          name={editPerson}
+          rows={rows.filter(r => r.values[2] === editPerson)}
+          itemMap={itemMap}
+          onClose={() => setEditPerson(null)}
+          onSaved={() => { setEditPerson(null); setAutoState({ phase: 'idle' }); flash(`${editPerson}님 수정 완료`); load(month) }}
+        />
+      )}
+    </div>
+  )
+}
+
+function EditPersonModal({ name, rows, itemMap, onClose, onSaved }) {
+  const [draft, setDraft] = useState(() => Object.fromEntries(rows.filter(r => r.assignId).map(r => [r.assignId, { productId: r.productId, quantity: Number(r.values[1]) || 1 }])))
+  const [saving, setSaving] = useState(false)
+
+  async function save() {
+    setSaving(true)
+    for (const r of rows.filter(x => x.assignId)) {
+      const d = draft[r.assignId]
+      if (!d) continue
+      if (d.productId === r.productId && d.quantity === (Number(r.values[1]) || 1)) continue
+      const prod = itemMap[r.itemId]?.products.find(p => p.id === d.productId)
+      const patch = { quantity: Math.max(1, Number(d.quantity) || 1) }
+      if (prod) Object.assign(patch, { product_id: prod.id, product_name: prod.name, sku: (prod.sku || '').trim() })
+      const { error } = await supabase.from('ad_assignments').update(patch).eq('id', r.assignId)
+      if (error) { setSaving(false); alert('저장 실패: ' + error.message); return }
+    }
+    setSaving(false)
+    onSaved()
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-lg" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b">
+          <h3 className="font-bold text-gray-900">{name}님 발송 제품 수정</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <div className="p-6 space-y-3 max-h-[60vh] overflow-y-auto">
+          {rows.map(r => {
+            const item = r.itemId ? itemMap[r.itemId] : null
+            const d = r.assignId ? draft[r.assignId] : null
+            const canPick = item && item.pick_mode === 'one' && item.products.length > 1
+            return (
+              <div key={r.key} className="border rounded-xl p-3">
+                <p className="text-xs text-gray-400 mb-1">{TYPE_LABEL[r.type]}{r.itemTitle ? ` · ${r.itemTitle}` : ''}</p>
+                {!r.assignId ? (
+                  <p className="text-sm text-gray-700">{r.productName} <span className="text-xs text-gray-400">(앰버서더 신청 · 신청 현황에서 변경)</span></p>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    {canPick ? (
+                      <select value={d.productId || ''} onChange={e => setDraft({ ...draft, [r.assignId]: { ...d, productId: e.target.value } })} className="flex-1 border rounded-lg px-2 py-1.5 text-sm">
+                        {item.products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    ) : (
+                      <p className="flex-1 text-sm text-gray-700">{r.productName}</p>
+                    )}
+                    <span className="text-xs text-gray-400">수량</span>
+                    <input type="number" min={1} value={d.quantity} onChange={e => setDraft({ ...draft, [r.assignId]: { ...d, quantity: Math.max(1, Number(e.target.value) || 1) } })} className="w-16 border rounded-lg px-2 py-1.5 text-sm" />
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+        <div className="flex gap-2 px-6 py-4 border-t">
+          <button onClick={onClose} className="flex-1 border rounded-xl py-3 text-sm text-gray-600 hover:bg-gray-50">취소</button>
+          <button onClick={save} disabled={saving} className="flex-1 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white rounded-xl py-3 text-sm font-semibold">{saving ? '저장 중...' : '저장'}</button>
         </div>
       </div>
     </div>
