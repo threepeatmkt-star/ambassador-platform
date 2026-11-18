@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, Fragment } from 'react'
 import Head from 'next/head'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
@@ -273,41 +273,50 @@ export default function AdminShipping() {
                       <tr className="border-b">
                         <th className="px-3 py-2 text-left text-gray-400 font-medium whitespace-nowrap">구분</th>
                         {ERP_HEADERS.map(h => <th key={h} className="px-3 py-2 text-left text-gray-500 font-medium whitespace-nowrap">{h}</th>)}
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium whitespace-nowrap sticky right-0 bg-white">인원별 관리</th>
                       </tr>
                     </thead>
                     <tbody>
                       {rows.map(r => {
+                        const name = r.values[2]
                         const bad = issueKeys.has(r.key)
-                        const personSkipped = skipSet.has(r.values[2])
+                        const personSkipped = skipSet.has(name)
                         const skipped = (bad && skipIssues) || personSkipped
                         const first = firstRowOf.has(r.key)
+                        const myRows = first ? rows.filter(x => x.values[2] === name) : []
+                        const canDelete = myRows.some(x => x.assignId)
+                        const btn = 'text-xs font-semibold rounded-md px-2.5 py-1 border bg-white'
                         return (
-                          <tr key={r.key} className={`border-b last:border-0 ${first ? 'border-t-2 border-t-gray-100' : ''} ${bad && !personSkipped ? 'bg-red-50/60' : ''} ${personSkipped ? 'bg-gray-50' : ''}`}>
-                            <td className="px-3 py-1.5 whitespace-nowrap">
-                              <span className={`px-2 py-0.5 rounded text-xs font-semibold ${r.type === 'ad' ? 'bg-orange-100 text-orange-700' : r.type === 'new' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{TYPE_LABEL[r.type]}</span>
-                            </td>
-                            {r.values.map((v, i) => (
-                              <td key={i} className={`px-3 py-1.5 text-gray-700 ${i === 5 ? 'min-w-[260px]' : 'whitespace-nowrap'} ${skipped ? 'opacity-40 line-through' : ''}`}>{String(v ?? '')}</td>
-                            ))}
-                            <td className="px-3 py-1.5 whitespace-nowrap sticky right-0 bg-inherit">
-                              {first && (
-                                <div className="flex gap-1">
-                                  {personSkipped ? (
-                                    <button onClick={() => toggleSkip(r.values[2])} className="text-xs border border-green-300 text-green-700 rounded-lg px-2 py-1 hover:bg-green-50 font-semibold">다시 넣기</button>
-                                  ) : (<>
-                                    <button onClick={() => toggleSkip(r.values[2])} className="text-xs border rounded-lg px-2 py-1 text-gray-600 hover:bg-gray-50" title="이번 ERP 등록에서만 빼요 (배정은 그대로)">빼기</button>
-                                    <button onClick={() => setEditPerson(r.values[2])} className="text-xs border rounded-lg px-2 py-1 text-gray-600 hover:bg-gray-50">수정</button>
-                                    <button onClick={() => deletePerson(r.values[2])} className="text-xs border border-red-200 text-red-500 rounded-lg px-2 py-1 hover:bg-red-50" title="배정 자체를 삭제">삭제</button>
-                                  </>)}
-                                </div>
-                              )}
-                              {first && personSkipped && <p className="text-[11px] text-gray-400 mt-0.5">이번 발송 제외</p>}
-                            </td>
-                          </tr>
+                          <Fragment key={r.key}>
+                            {first && (
+                              <tr className={`border-t-2 border-gray-200 ${personSkipped ? 'bg-gray-100' : 'bg-gray-50'}`}>
+                                <td colSpan={9} className="px-3 py-1.5">
+                                  <div className="flex items-center gap-2 sticky left-3 w-fit">
+                                    <span className={`font-bold ${personSkipped ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{name}</span>
+                                    <span className="text-xs text-gray-400 mr-2">제품 {myRows.length}개</span>
+                                    {personSkipped ? (<>
+                                      <span className="text-xs bg-gray-200 text-gray-600 rounded-full px-2 py-0.5">이번 발송 제외</span>
+                                      <button onClick={() => toggleSkip(name)} className={`${btn} border-green-300 text-green-700 hover:bg-green-50`}>다시 넣기</button>
+                                    </>) : (<>
+                                      <button onClick={() => toggleSkip(name)} className={`${btn} text-gray-600 hover:bg-gray-100`} title="이번 ERP 등록에서만 빼요 (배정은 그대로)">빼기</button>
+                                      <button onClick={() => setEditPerson(name)} className={`${btn} text-gray-600 hover:bg-gray-100`}>수정</button>
+                                      {canDelete && <button onClick={() => deletePerson(name)} className={`${btn} border-red-200 text-red-500 hover:bg-red-50`} title="광고·신제품 배정 삭제">삭제</button>}
+                                    </>)}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                            <tr className={`border-b border-gray-100 ${bad && !personSkipped ? 'bg-red-50/60' : ''} ${skipped ? 'opacity-40' : ''}`}>
+                              <td className="px-3 py-1.5 whitespace-nowrap">
+                                <span className={`px-2 py-0.5 rounded text-xs font-semibold ${r.type === 'ad' ? 'bg-orange-100 text-orange-700' : r.type === 'new' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{TYPE_LABEL[r.type]}</span>
+                              </td>
+                              {r.values.map((v, i) => (
+                                <td key={i} className={`px-3 py-1.5 text-gray-700 ${i === 5 ? 'min-w-[260px]' : 'whitespace-nowrap'} ${skipped ? 'line-through' : ''}`}>{String(v ?? '')}</td>
+                              ))}
+                            </tr>
+                          </Fragment>
                         )
                       })}
-                      {rows.length === 0 && <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-400">
+                      {rows.length === 0 && <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-400">
                         {typeFilter === 'new' ? (
                           <>
                             <p>{monthLabel(month)} 신제품을 받을 사람이 아직 없어요.</p>
