@@ -64,8 +64,14 @@ export default async function handler(req, res) {
     const groups = groupByAmbassador(appsRes.data || [], adsRes.data || [])
     const { rows, issues } = buildErpRows(groups, ambRes.data || [], { types: useTypes, message: String(message).trim() })
     const issueKeys = new Set(issues.map(i => i.key))
-    if (issues.length && !skipIssues) return res.status(400).json({ error: `확인이 필요한 행 ${issues.length}건이 있어요.`, issues })
-    const validRows = rows.filter(r => !issueKeys.has(r.key))
+    // 관리자가 ERP 출고 화면에서 '이번 발송에서 빼기' 한 사람
+    const { data: skipRow } = await supabase.from('settings').select('value').eq('key', `erp_skip_${isNew ? 'new' : 'monthly'}_${month}`).maybeSingle()
+    let skipNames = []
+    try { skipNames = JSON.parse(skipRow?.value || '[]') } catch {}
+    const skipSet = new Set(skipNames)
+    const validRows = rows.filter(r => !issueKeys.has(r.key) && !skipSet.has(r.values[2]))
+    const activeIssues = issues.filter(i => !skipSet.has(i.name))
+    if (activeIssues.length && !skipIssues) return res.status(400).json({ error: `확인이 필요한 행 ${activeIssues.length}건이 있어요.`, issues: activeIssues })
     if (!validRows.length) return res.status(400).json({ error: '등록할 행이 없어요.' })
 
     // 3) ERP 로그인 · 이번 달 이미 등록된 사람 제외 (중복 발송 방지)
